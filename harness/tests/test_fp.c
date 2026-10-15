@@ -12,7 +12,8 @@
 
 #define EXE "original/stars26i.exe"
 
-/* Measured by test_control_word_at_winmain: FNINIT state, PC = 11b (64-bit), RC = 00b. */
+/* The HARNESS MODEL of the control word (FNINIT state, PC = 11b, RC = 00b, all masked),
+ * not a measurement; the real word is likely 0x1330/0x1332. See docs/CONVENTIONS.md. */
 #define PINNED_CW 0x037Fu
 #define N_PAIRS 100000
 #define N_PAIRS_CW 10000
@@ -30,14 +31,29 @@ static void h_localalloc(HCall *c) { c->ret = g_heap_next; g_heap_next += 0x100;
 
 static unsigned g_winmain_hits;
 static uint16_t g_cw_at_winmain;
-static void on_winmain(uint32_t lin, void *ud) {
-  (void)lin; (void)ud;
-  if (g_winmain_hits++ == 0) g_cw_at_winmain = harness_fpcw();
-  harness_stop_emu();
+static uint32_t g_lin_winmain, g_lin_fninit, g_lin_fldcw;
+static unsigned g_hit_fninit, g_hit_fldcw;
+static uint16_t g_cw_before_fninit, g_cw_before_fldcw;
+static void on_startup_insn(uint32_t lin, void *ud) {
+  (void)ud;
+  if (lin == g_lin_winmain) {
+    if (g_winmain_hits++ == 0) g_cw_at_winmain = harness_fpcw();
+    harness_stop_emu();
+  } else if (lin == g_lin_fninit) {
+    if (g_hit_fninit++ == 0) g_cw_before_fninit = harness_fpcw();
+  } else if (lin == g_lin_fldcw) {
+    if (g_hit_fldcw++ == 0) g_cw_before_fldcw = harness_fpcw();
+  }
 }
 
-static void test_control_word_at_winmain(void) {
-  uint32_t base = desc_base(MEM_SEL_SEG(3));
+/* Runs the C runtime start-up (34:0x001A) up to the first instruction of WinMain with the
+ * x87 control word set to cw_in beforehand. The start-up path executes FNSTCW [bp-6],
+ * FNINIT (34:0x265a), compares, FNCLEX and FLDCW [bp-6] (34:0x26b1): net-neutral. */
+static void run_startup(uint16_t cw_in) {
+  uint32_t b3 = desc_base(MEM_SEL_SEG(3)), b34 = desc_base(MEM_SEL_SEG(34));
+  uint32_t lo = b3 < b34 ? b3 : b34, hi = (b3 > b34 ? b3 : b34) + 0x10000;
+  g_lin_winmain = b3; g_lin_fninit = b34 + 0x265a; g_lin_fldcw = b34 + 0x26b1;
+  g_winmain_hits = g_hit_fninit = g_hit_fldcw = 0;
   harness_set_quiet(true);
   harness_register("KERNEL", 91, h_inittask);   /* InitTask */
   harness_register("KERNEL", 3, h_version);     /* GetVersion */
@@ -46,15 +62,37 @@ static void test_control_word_at_winmain(void) {
   harness_register("KERNEL", 5, h_localalloc);  /* LocalAlloc */
   harness_register("KERNEL", 23, h_one);        /* LockSegment */
   harness_register("KERNEL", 24, h_one);        /* UnlockSegment */
-  harness_trace(base, base + 1, on_winmain, NULL);
+  harness_trace(lo, hi, on_startup_insn, NULL);
+  harness_set_fpcw(cw_in);
   harness_call(MEM_SEL_SEG(34), 0x001A, HCONV_CDECL, NULL, 0, NULL);
   harness_trace(0, 0, NULL, NULL);
   harness_set_quiet(false);
+}
+
+/* The 0x037F pin is the HARNESS MODEL (harness_init loads it), not a measurement of
+ * the real word: the start-up path preserves whatever word it is entered with. */
+static void test_control_word_at_winmain(void) {
+  run_startup(PINNED_CW);
   CHECK_EQ(g_winmain_hits, 1);
   CHECK_EQ(g_cw_at_winmain, PINNED_CW);
   CHECK_EQ((g_cw_at_winmain >> 8) & 3, 3);   /* PC: 64-bit significand */
   CHECK_EQ((g_cw_at_winmain >> 10) & 3, 0);  /* RC: round to nearest even */
   CHECK_EQ(g_cw_at_winmain & 0x3F, 0x3F);    /* all exceptions masked */
+}
+
+/* Sentinel: 0x1332 (PC = 11, IM/DM/ZM/OM unmasked, the likely real word) entering the
+ * start-up path is still 0x1332 at WinMain. The path does run FNINIT (34:0x265a, the
+ * word is saved by FNSTCW before and restored by FLDCW at 34:0x26b1), so it is
+ * net-neutral. Passes on the current code; it proves preservation. */
+static void test_control_word_sentinel(void) {
+  run_startup(0x1332);
+  CHECK_EQ(g_winmain_hits, 1);
+  CHECK_EQ(g_hit_fninit, 1);                 /* FNINIT really is on the path... */
+  CHECK_EQ(g_hit_fldcw, 1);                  /* ...and so is the restoring FLDCW */
+  CHECK_EQ(g_cw_before_fldcw, 0x037F);       /* FNINIT reset the word in between */
+  CHECK_EQ(g_cw_at_winmain, 0x1332);
+  run_startup(PINNED_CW);                    /* leave the harness model in place */
+  CHECK_EQ(g_cw_at_winmain, PINNED_CW);
 }
 
 /* ---- 2. Equivalence of Unicorn x87 and fp80 ---- */
@@ -96,7 +134,7 @@ static uint64_t rnd_near(uint64_t a) {
 
 #define BATCH 1000u
 
-static uint16_t g_code_arith[4], g_code_fistp16, g_code_fistp32;
+static uint16_t g_code_arith[4], g_code_fistp16, g_code_fistp32, g_code_fistp64;
 static uint16_t g_data; /* data selector: BATCH records of 24 bytes (a, b, result) */
 
 static uint16_t mk(const uint8_t *c, size_t n) {
@@ -121,6 +159,10 @@ static void setup_code(void) {
   {
     uint8_t c[] = {0x26, 0xDD, 0x04, 0x26, 0xDB, 0x5C, 0x10, 0x83, 0xC6, 0x18, 0xE2, 0xF4, 0xCB};
     g_code_fistp32 = mk(c, sizeof c); /* fistp dword */
+  }
+  {
+    uint8_t c[] = {0x26, 0xDD, 0x04, 0x26, 0xDF, 0x7C, 0x10, 0x83, 0xC6, 0x18, 0xE2, 0xF4, 0xCB};
+    g_code_fistp64 = mk(c, sizeof c); /* fistp qword */
   }
   g_data = GlobalAlloc(GPTR, BATCH * 24u);
   CHECK(g_data != 0);
@@ -211,6 +253,62 @@ static unsigned test_fistp(int wide, uint16_t cw, unsigned n) {
   return bad;
 }
 
+/* ---- 3. ftol (34:0x0de6): the game's (long) cast, FISTP m64 under RC = 11b ---- */
+
+
+static uint64_t rnd_ftol_operand(void) {
+  static const uint64_t special[] = {
+    0x41F0000000A00000ull,  /* 2^32 + 5: wraps to 5 */
+    0xC1F0000000A00000ull,  /* -(2^32 + 5) */
+    0x43E0000000000000ull,  /* 2^63: invalid, 0 */
+    0xC3E0000000000000ull,  /* -2^63: exact, low word 0 */
+    0x43DFFFFFFFFFFFFFull,  /* largest double below 2^63 */
+    0x7FF8000000000000ull,  /* QNaN */
+    0xFFF8000000000000ull,  /* real indefinite */
+    0x7FF0000000000000ull, 0xFFF0000000000000ull,  /* +-inf */
+    0x41DFFFFFFFC00000ull,  /* 2^31 - 1 */
+    0x41E0000000000000ull,  /* 2^31 */
+    0xC1E0000000000000ull,  /* -2^31 */
+    0x3FEFFFFFFFFFFFFFull,  /* just below 1: truncates to 0 */
+    0xBFEFFFFFFFFFFFFFull,
+  };
+  uint64_t r = rnd();
+  unsigned k = (unsigned)(r >> 59) & 15;
+  if (k == 0) return special[(r >> 20) % (sizeof special / sizeof special[0])];
+  if (k == 1) return bits((double)(int64_t)rnd());                    /* up to 2^63 */
+  if (k == 2) return bits((double)(int64_t)(rnd() >> 11) * 4.0);      /* wraps in 32 bits */
+  if (k == 3) return (rnd() & 0x800FFFFFFFFFFFFFull) | (0x7FFull << 52) | 1; /* NaN, either sign, any payload */
+  return rnd_int_operand();
+}
+
+static unsigned test_ftol(unsigned n) {
+  unsigned bad = 0;
+  uint64_t rec[BATCH][3];
+  uint16_t cw = 0x0F7F; /* the original sets RC = 11b (truncate) around FISTP m64 */
+  fp80_set_cw(cw);
+  for (unsigned done = 0; done < n; done += BATCH) {
+    for (unsigned i = 0; i < BATCH; i++) { rec[i][0] = rnd_ftol_operand(); rec[i][1] = 0; rec[i][2] = 0; }
+    run_x87(g_code_fistp64, cw, rec);
+    for (unsigned i = 0; i < BATCH; i++) {
+      uint64_t a = rec[i][0];
+      uint32_t x = (uint32_t)rec[i][2];
+      uint32_t f = (uint32_t)fp80_to_i32_ftol(fp80_from_f64(dbl(a)));
+      if (x != f && bad++ == 0)
+        fprintf(stderr, "ftol mismatch: %016llx x87 %08x fp80 %08x\n", (unsigned long long)a, x, f);
+    }
+  }
+  return bad;
+}
+
+static void test_ftol_cases(void) {
+  fp80_set_cw(0x0F7F);
+  CHECK_EQ(fp80_to_i32_ftol(fp80_from_f64(4294967301.0)), 5);          /* 2^32 + 5 wraps */
+  CHECK_EQ(fp80_to_i32_ftol(fp80_from_f64(9223372036854775808.0)), 0); /* 2^63 */
+  CHECK_EQ(fp80_to_i32_ftol(fp80_from_f64(-2.9)), -2);
+  CHECK_EQ(fp80_to_i32_ftol(fp80_from_f64(2147483648.0)), INT32_MIN);  /* 2^31 wraps */
+  CHECK_EQ(fp80_to_i32_ftol(fp80_from_f64(dbl(0x7FF8000000000000ull))), 0);
+}
+
 static void test_equivalence(void) {
   static const char *name[4] = {"FADD", "FSUB", "FMUL", "FDIV"};
   setup_code();
@@ -228,6 +326,9 @@ static void test_equivalence(void) {
   CHECK_EQ(test_fistp(0, PINNED_CW, N_PAIRS), 0);
   CHECK_EQ(test_fistp(1, PINNED_CW, N_PAIRS), 0);
   printf("FISTP m16/m32 cw=%04x: %d pairs each\n", PINNED_CW, N_PAIRS);
+  test_ftol_cases();
+  CHECK_EQ(test_ftol(N_PAIRS), 0);
+  printf("FISTP m64 (ftol) cw=0f7f: %d operands, low 32 bits\n", N_PAIRS);
 }
 
 /* The helpers honour the rounding control and the precision control too. */
@@ -254,6 +355,7 @@ int main(void) {
     return 1;
   }
   test_control_word_at_winmain();
+  test_control_word_sentinel();
   test_equivalence();
   test_other_control_words();
   harness_shutdown();

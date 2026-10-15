@@ -77,6 +77,7 @@ void harness_shutdown(void);
 
 /* Configuration. harness_set_winflags must be called before harness_load. */
 void harness_set_winflags(uint16_t flags);
+bool harness_is_strict(void);
 void harness_set_strict(bool strict);  /* unimplemented API: abort (strict) or log and return 0 */
 void harness_set_quiet(bool quiet);    /* suppress the UNIMPLEMENTED stderr line */
 
@@ -126,7 +127,14 @@ void harness_log_set(const HLogEntry *e, size_t n);
  * running emulation from a trace callback. */
 uint16_t harness_fpcw(void);
 void harness_set_fpcw(uint16_t v);
+uint16_t harness_fpsw(void); /* x87 status word (UC_X86_REG_FPSW) */
+void harness_set_fpsw(uint16_t v);
 void harness_stop_emu(void);
+/* Fatal abort: stops the running emulation AND every enclosing one. harness_stop_emu stops
+ * only the innermost uc_emu_start; harness_call propagates this sticky abort up through the
+ * nested calls (an API handler calling game code), so the outer game code never continues.
+ * At depth 0 the call ends with harness_last_error() != 0 and the flag is cleared. */
+void harness_abort_run(void);
 
 /* Engine/last error: 0 when the last run ended normally, else a uc_err value. */
 int harness_last_error(void);

@@ -37,12 +37,13 @@ Measured on 2026-10-15 from `original/stars26i.exe` (SHA-256 `5770dade…198e`, 
 | 5 | Capstone 5.0.9, C library | Disassembly in harness traces and failure reports. | installed |
 | 6 | Apple clang, LLVM 20/21 | Native builds of runtime, harness and decompiled code for fast tests. | installed |
 | 7 | Emscripten 5.0.2 | C to WebAssembly for the browser build. | installed |
-| 8 | Node 24 + npm | Runs wasm builds and the dev server, `node --test`. | installed |
+| 8 | Node 24 + npm | Runs wasm builds, the Angular CLI and dev server, `node --test`. | installed |
 | 9 | Playwright | Browser end-to-end and screenshot tests. | npm dev dependency (not installed yet) |
 | 10 | Wine 16-bit `.spec` files | Ordinal → name, calling convention and argument list for every import. The harness needs the argument bytes to pop for Pascal calls (e.g. `USER.1 MessageBox(word str str word)` pops 12). Paths verified: `dlls/krnl386.exe16/krnl386.exe16.spec`, `dlls/user.exe16/user.exe16.spec`, `dlls/gdi.exe16/gdi.exe16.spec`, `dlls/commdlg.dll16/commdlg.dll16.spec`, `dlls/toolhelp.dll16/toolhelp.dll16.spec`, `dlls/win87em.dll16/win87em.dll16.spec` at wine-mirror/wine commit `5b6b85421c2a2161728b2a55e9f09271770a3eb0` (LGPL-2.1). | to vendor into `tools/winespec/` |
 | 11 | Python 3 (stdlib only) | Small code generators, such as spec files → C import table. | installed (3.14.8) |
 | 12 | DOSBox-X + Windows 3.11 | Runs the original game on real Windows 3.11, for reference screenshots, font glyphs and golden game files. | DOSBox-X 2026.10.01 installed. **Windows 3.11 install media and licence must come from the user.** |
 | 13 | helpdeco 2.1.4 (GPL-2.0, SourceForge) or `winhlp` (PyPI) | Converts `stars!.hlp` to RTF or HTML for the in-browser help viewer. | not installed |
+| 14 | Angular, latest stable (CLI via `npx @angular/cli@latest`) | The browser frontend in `web/`: canvas host, input, file import/export, IndexedDB. Static build, no backend (decision 11). | npm dependency of `web/` (not created yet) |
 | 14 | Berkeley SoftFloat 3e (BSD-3) | Exact 80-bit x87 arithmetic, needed only if the C runtime runs the FPU at 64-bit mantissa precision (decided by a task). | vendor only if needed |
 
 Tools we build (each one a bd task):
@@ -64,7 +65,7 @@ Not needed:
 
 ```
 browser
- ├─ web/ (index.html, host.js)   canvas, mouse/keyboard → Win16 messages, file import/export, IndexedDB
+ ├─ web/ (Angular app)           canvas, mouse/keyboard → Win16 messages, file import/export, IndexedDB
  └─ stars.wasm (Emscripten, ASYNCIFY)
       ├─ src/       decompiled game code (C, 16-bit semantics explicit)
       └─ runtime/   Win16 API in C: KERNEL USER GDI COMMDLG TOOLHELP WIN87EM + DOS3Call
@@ -120,6 +121,11 @@ Owner decisions (2026-10-15):
     runtime, harness and web host. Decompiled source (`src/`), diff-test scenarios, the function
     inventory, reference screenshots and golden game files stay local and git-ignored, as do the
     original files, serials and Windows files.
+11. **Frontend is Angular (latest stable), browser only, no backend.** `web/` is an Angular app on
+    the latest stable Angular release, kept current with `ng update`. It hosts the canvas, input,
+    file import/export and IndexedDB persistence, and loads `stars.js` + `stars.wasm` as static
+    assets. The game runs entirely in the browser: no application server, no API, no server-side
+    storage. The build output is static files any static host can serve.
 
 ## 4. Test-driven development
 
@@ -139,7 +145,7 @@ implementation as a behavioural reference and DOSBox-X observations where those 
 Conventions shared by all tasks:
 - `make test` at the repo root builds every native test with clang and runs it. A non-zero exit
   means failure. C tests use a minimal `tests/test.h` (CHECK macros) with no framework.
-- `make wasm` builds `web/stars.js` + `web/stars.wasm` with emcc.
+- `make wasm` builds `web/public/wasm/stars.js` + `web/public/wasm/stars.wasm` with emcc; the Angular app in `web/` loads them as static assets.
 - Test file names are `test_<topic>.c` next to the module (`runtime/tests/`, `harness/tests/`).
 - No commits are made by agents. Changes are left in the working tree.
 
@@ -177,7 +183,7 @@ runtime/       Win16 runtime in C; runtime/tests/
 harness/       native-only Unicorn harness and diff-test driver; harness/tests/
 src/           decompiled game: segNN.c per original code segment, stars.h, globals.h, registry
 tests/         test.h, scenarios/ (diff tests), golden/ (game files), ref/ (reference screenshots)
-web/           host page, JS glue, Playwright tests
+web/           Angular frontend (static, no backend), Playwright tests
 third_party/   vendored libraries, only if a task's decision requires one (e.g. SoftFloat 3e)
 re/            generated, git-ignored: Ghidra project, dumps, frame captures
 build/         build output, git-ignored

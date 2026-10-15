@@ -36,4 +36,10 @@ Fp80 fp80_div(Fp80 a, Fp80 b);
 int16_t fp80_to_i16(Fp80 x);
 int32_t fp80_to_i32(Fp80 x);
 
+/* ftol, the game's only runtime FP function (34:0x0de6, the C cast (long)d, 42 call sites):
+ * FISTP m64 under RC = 11b (truncate toward zero), returning the low 32 bits (DX:AX).
+ * Independent of the current control word. Values outside +-2^31 wrap (2^32 + 5 gives 5);
+ * |d| >= 2^63 or NaN gives the 64-bit integer indefinite, whose low 32 bits are 0. */
+int32_t fp80_to_i32_ftol(Fp80 x);
+
 #endif /* STARS_RUNTIME_FP80_H */

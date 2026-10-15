@@ -1,4 +1,5 @@
-# Generated from build/Linux-x86_64-GCC/Makefile of SoftFloat 3e (the FAST_INT64 object list).
+# Generated from build/Linux-x86_64-GCC/Makefile of SoftFloat "3e plus master changes", pinned at
+# berkeley-softfloat-3 commit a0c6494cdc11865811dec815d5c0049fba9d82a8 (the FAST_INT64 object list).
 SF_SRCS := \
   third_party/softfloat/source/s_eq128.c \
   third_party/softfloat/source/s_le128.c \

@@ -133,6 +133,7 @@ static int g_depth;
 static int g_last_err;
 static unsigned g_api_limit, g_api_count;
 static bool g_stopped_early;
+static bool g_abort; /* sticky: harness_abort_run was called; cleared at depth 0 */
 static uc_context *g_clean_ctx; /* saved right after boot */
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
@@ -381,7 +382,19 @@ uint16_t harness_fpcw(void) {
 void harness_set_fpcw(uint16_t v) {
   if (g_uc) uc_reg_write(g_uc, UC_X86_REG_FPCW, &v);
 }
+uint16_t harness_fpsw(void) {
+  uint16_t v = 0;
+  if (g_uc) uc_reg_read(g_uc, UC_X86_REG_FPSW, &v);
+  return v;
+}
+void harness_set_fpsw(uint16_t v) {
+  if (g_uc) uc_reg_write(g_uc, UC_X86_REG_FPSW, &v);
+}
 void harness_stop_emu(void) {
+  if (g_uc) uc_emu_stop(g_uc);
+}
+void harness_abort_run(void) {
+  g_abort = true;
   if (g_uc) uc_emu_stop(g_uc);
 }
 uint16_t harness_stack_top(void) { return g_stack_top; }
@@ -418,6 +431,7 @@ void harness_trace(uint32_t lin_begin, uint32_t lin_end, HTraceFn fn, void *ud) 
 }
 void harness_set_winflags(uint16_t flags) { g_winflags = flags; }
 void harness_set_strict(bool strict) { g_strict = strict; }
+bool harness_is_strict(void) { return g_strict; }
 void harness_set_quiet(bool quiet) { g_quiet = quiet; }
 
 /* ---- calls ---- */
@@ -444,6 +458,7 @@ uint32_t harness_call(uint16_t sel, uint16_t off, int conv, const uint16_t *args
     g_last_err = UC_ERR_ARG;
     return 0;
   }
+  if (nested && g_abort) return 0; /* the run is being aborted: no new game code */
   if (nested) {
     uc_context_alloc(g_uc, &ctx);
     uc_context_save(g_uc, ctx);
@@ -457,6 +472,7 @@ uint32_t harness_call(uint16_t sel, uint16_t off, int conv, const uint16_t *args
     ss = MEM_SEL_DGROUP;
     sp = call_sp ? call_sp : g_stack_top;
     g_stopped_early = false;
+    g_abort = false;
     g_api_count = 0;
     g_last_err = 0;
     wr(UC_X86_REG_AX, 0); wr(UC_X86_REG_BX, 0); wr(UC_X86_REG_CX, 0); wr(UC_X86_REG_DX, 0);
@@ -533,11 +549,15 @@ uint32_t harness_call(uint16_t sel, uint16_t off, int conv, const uint16_t *args
      * macOS). Dropping the translation cache after every nested call avoids
      * it (test_callback_repeated in harness/tests/test_harness.c). */
     uc_ctl_flush_tb(g_uc);
-  } else if (!g_stopped_early && (g_last_err != 0 || out.cs != ret_sel || out.ip != ret_off)) {
+    /* A fatal abort inside this nested run must end the enclosing run too, not only the
+     * innermost one (the outer handler's own uc_emu_start is still active). */
+    if (g_abort) uc_emu_stop(g_uc);
+  } else if (g_abort || (!g_stopped_early && (g_last_err != 0 || out.cs != ret_sel || out.ip != ret_off))) {
     /* The run did not end at the return address: a fault, or a stop from a
      * hook. Report it and put the CPU back to its post-boot state so later
      * calls work. */
     if (g_last_err == 0) g_last_err = -1;
+    g_abort = false;
     uc_context_restore(g_uc, g_clean_ctx);
   } else if (near) {
     /* The CPU is left in the callee's code segment; every run must start with
@@ -642,8 +662,12 @@ int harness_init(void) {
     return -1;
   }
   /* Unicorn starts with FPCW = 0 (24-bit precision), which no real x87 has after
-   * reset. Put the FNINIT state in place: the original relies on it (its C runtime
-   * never loads a full control word at start-up; docs/CONVENTIONS.md "Floating point"). */
+   * reset. Put the FNINIT state in place. 0x037F (all exceptions masked) is a MODEL,
+   * not a measurement: the C runtime start-up path saves the word (FNSTCW), runs FNINIT
+   * and restores it (FLDCW at 34:0x26b1), so it is net-neutral and whatever word is
+   * set here reaches WinMain. The real word is most likely 0x1330/0x1332 (PC = 11b,
+   * IM/DM/ZM/OM unmasked, handler 34:0x1db4); the two differ only on exceptional
+   * paths. docs/CONVENTIONS.md "Floating point". */
   harness_set_fpcw(0x037F);
   g_n_thunks = 0;
   g_depth = 0;
@@ -651,6 +675,7 @@ int harness_init(void) {
   g_n_log = 0;
   g_api_limit = g_api_count = 0;
   g_stopped_early = false;
+  g_abort = false;
   if (uc_context_alloc(g_uc, &g_clean_ctx) != UC_ERR_OK || uc_context_save(g_uc, g_clean_ctx) != UC_ERR_OK) {
     fail("cannot save the clean context");
     return -1;

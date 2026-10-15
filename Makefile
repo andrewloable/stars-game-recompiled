@@ -112,11 +112,17 @@ $(NEDUMP): tools/nedump.c runtime/ne.h build/libruntime.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(INCLUDES) $< build/libruntime.a $(LDFLAGS) -o $@
 
-.PHONY: all test doctor clean
+.PHONY: all test doctor clean check-split
+
+# The runtime must not depend on the harness (the split is one-way: harness -> runtime).
+check-split:
+	@if grep -nE '#[[:space:]]*include[[:space:]]*[<"]harness/' runtime/*.c runtime/*.h; then \
+	  echo "check-split: runtime/ must not include harness/ headers"; exit 1; \
+	fi
 
 all: $(LIBS) $(TEST_BINS) $(GEN_IMPORTS) $(NEDUMP)
 
-test: $(TEST_BINS) $(GEN_IMPORTS)
+test: check-split $(TEST_BINS) $(GEN_IMPORTS)
 	@fail=0; \
 	for t in $(TEST_BINS); do \
 	  echo "== $$t"; \

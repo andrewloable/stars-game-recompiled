@@ -97,7 +97,9 @@ uint32_t GlobalSize(uint16_t h); /* 0 on invalid handle */
 
 /* Local heap inside DGROUP. mem_local_init(start, end) sets the heap to the
  * DGROUP offsets [start, end), after the static data and the stack. Only
- * LMEM_FIXED and LMEM_ZEROINIT are supported; any other flag aborts. */
+ * LMEM_FIXED and LMEM_ZEROINIT are supported; any other flag aborts. The KERNEL API
+ * wrappers (runtime/kernel.h kernel_LocalAlloc/kernel_LocalReAlloc) drop the no-op flags
+ * NOCOMPACT/NODISCARD (and MOVEABLE for realloc) first. */
 void mem_local_init(uint16_t start, uint16_t end);
 uint16_t LocalAlloc(uint16_t flags, uint16_t bytes);
 uint16_t LocalReAlloc(uint16_t off, uint16_t bytes, uint16_t flags);

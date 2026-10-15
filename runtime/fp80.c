@@ -54,3 +54,13 @@ int16_t fp80_to_i16(Fp80 x) {
   if (v < INT16_MIN || v > INT16_MAX) return INT16_MIN;
   return (int16_t)v;
 }
+
+int32_t fp80_to_i32_ftol(Fp80 x) {
+  uint_fast8_t saved = softfloat_exceptionFlags;
+  int_fast64_t v;
+  softfloat_exceptionFlags = 0;
+  v = extF80_to_i64(x, softfloat_round_minMag, false);
+  if (softfloat_exceptionFlags & softfloat_flag_invalid) v = 0; /* indefinite 2^63: low word 0 */
+  softfloat_exceptionFlags = saved;
+  return (int32_t)(uint32_t)((uint64_t)v & 0xFFFFFFFFu);
+}

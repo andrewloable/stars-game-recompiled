@@ -6,6 +6,14 @@
 /re/
 # Build output.
 /build/
+# Public repo holds the runtime only (docs/PLAN.md decision 10): keep everything derived from the
+# game's code or screens local.
+/src/
+/tests/scenarios/
+/tests/golden/
+/tests/ref/*.png
+/docs/functions.csv
+/docs/inventory.md
 
 # Beads / Dolt files (added by bd init)
 .dolt/

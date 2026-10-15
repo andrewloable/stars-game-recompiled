@@ -805,18 +805,17 @@ uint16_t DestroyWindow(HWND16 hwnd) {
   }
   if (!user_wnd(hwnd)) return 1;
   if (!is_child) {
-    /* owned windows go first */
-    for (;;) {
-      UserState *st = user_state();
-      HWND16 owned = 0;
-      for (unsigned i = 1; i < UW_MAX; i++)
-        if (st->w[i].used && st->w[i].owner == hwnd) {
-          owned = user_hwnd(&st->w[i]);
-          st->w[i].owner = 0; /* no endless loop if it survives its own destruction */
-          break;
-        }
-      if (!owned) break;
-      DestroyWindow(owned);
+    /* owned windows go first, with their owner intact (Wine keeps it during same-thread
+     * destruction). Snapshot the list; a window that survives its own destruction cannot make
+     * this loop forever. */
+    UserState *st = user_state();
+    HWND16 owned[UW_MAX];
+    unsigned n = 0;
+    for (unsigned i = 1; i < UW_MAX; i++)
+      if (st->w[i].used && st->w[i].owner == hwnd) owned[n++] = user_hwnd(&st->w[i]);
+    for (unsigned i = 0; i < n; i++) {
+      const UWnd *ow = user_wnd(owned[i]);
+      if (ow && ow->owner == hwnd) DestroyWindow(owned[i]); /* still alive and still owned */
     }
   }
   if (!user_wnd(hwnd)) return 1;

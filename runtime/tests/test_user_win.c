@@ -42,6 +42,7 @@
 #include "test.h"
 
 #include "user_test_common.h"
+#include "runtime/user_internal.h"
 
 #define CLS "TESTCLS"
 #define CLS_C "TESTCLSC"
@@ -500,18 +501,29 @@ static void test_window_placement(void) {
  * Wine: server/window.c redraw_window with RDW_ALLCHILDREN (the exposed area is invalidated
  * in the whole subtree). The game's tooltip is a top-level WS_POPUP over child panes. */
 static void test_hide_popup_invalidates_child_pane(void) {
-  HWND16 f, pane, pop;
+  HWND16 f, pane, far_pane, pop;
+  const UWnd *pw;
   f = mk("F", CLS, "frame", TOP, 0, 0, 300, 200, 0, 0);
   pane = mk("N", CLS, "pane", WS_CHILD | WS_VISIBLE, 10, 10, 100, 100, f, 1);
+  far_pane = mk("M", CLS, "far", WS_CHILD | WS_VISIBLE, 200, 10, 40, 40, f, 2); /* clear of the popup */
   pop = mk("T", CLS, "tip", WS_POPUP | WS_VISIBLE, 20, 20, 50, 50, 0, 0);
-  CHECK(f && pane && pop);
+  CHECK(f && pane && far_pane && pop);
   ValidateRect(f, 0);
   ValidateRect(pane, 0);
+  ValidateRect(far_pane, 0);
   ValidateRect(pop, 0);
   CHECK_EQ(user_window_nupd(pane), 0);
   ShowWindow(pop, SW_HIDE);
-  CHECK(user_window_nupd(pane) != 0); /* the uncovered window, not only its parent */
   CHECK(user_window_nupd(f) != 0);
+  CHECK_EQ(user_window_nupd(far_pane), 0); /* not under the popup: untouched */
+  /* The popup covered screen (20,20)-(70,70) = (10,10)-(60,60) in the pane's client coordinates
+   * (the pane's origin is screen 10,10). That is exactly the uncovered rectangle. */
+  pw = user_wnd(pane);
+  CHECK_EQ(user_window_nupd(pane), 1);
+  CHECK_RECT(pw->upd[0], 10, 10, 60, 60);
+  UpdateWindow(pane);
+  CHECK_EQ(user_window_nupd(pane), 0); /* painted (and validated) by the update */
+  CHECK_EQ(user_window_nupd(far_pane), 0);
   DestroyWindow(pop);
   DestroyWindow(f);
 }
@@ -528,6 +540,39 @@ static void test_popup_owner_is_toplevel(void) {
   CHECK_EQ(GetWindow(pop, GW_OWNER), f);
   DestroyWindow(f);
   CHECK_EQ(IsWindow(pop), 0);
+  CHECK_EQ(user_window_count(), 0);
+}
+
+/* Wine keeps the owner while an owned window is destroyed with its owner (same thread):
+ * inside the popup's WM_DESTROY / WM_NCDESTROY, GW_OWNER and GetParent still name the owner. */
+static HWND16 g_own_pop, g_own_in_destroy, g_own_par_destroy, g_own_in_ncdestroy;
+static int hook_record_owner(HWND16 h, uint16_t msg, uint16_t wp, uint32_t lp) {
+  (void)wp;
+  (void)lp;
+  if (h != g_own_pop) return 0;
+  if (msg == WM_DESTROY) {
+    g_own_in_destroy = GetWindow(h, GW_OWNER);
+    g_own_par_destroy = GetParent(h);
+  }
+  if (msg == WM_NCDESTROY) g_own_in_ncdestroy = GetWindow(h, GW_OWNER);
+  return 0;
+}
+
+static void test_owner_kept_during_destroy(void) {
+  HWND16 f, pop;
+  f = mk("F", CLS, "frame", TOP, 0, 0, 300, 200, 0, 0);
+  pop = mk("T", CLS, "tip", WS_POPUP, 20, 20, 50, 50, f, 0);
+  CHECK(f && pop);
+  CHECK_EQ(GetWindow(pop, GW_OWNER), f);
+  g_own_pop = pop;
+  g_own_in_destroy = g_own_par_destroy = g_own_in_ncdestroy = 0xFFFF;
+  g_hook = hook_record_owner;
+  DestroyWindow(f);
+  g_hook = NULL;
+  CHECK_EQ(IsWindow(pop), 0);
+  CHECK_EQ(g_own_in_destroy, f);
+  CHECK_EQ(g_own_par_destroy, f);
+  CHECK_EQ(g_own_in_ncdestroy, f);
   CHECK_EQ(user_window_count(), 0);
 }
 
@@ -549,6 +594,7 @@ int main(void) {
   test_window_placement();
   test_hide_popup_invalidates_child_pane();
   test_popup_owner_is_toplevel();
+  test_owner_kept_during_destroy();
   fixture_close();
   return TEST_DONE();
 }

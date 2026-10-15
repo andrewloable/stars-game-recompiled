@@ -73,15 +73,21 @@ void ValidateRect(HWND16 hwnd, FARPTR lpRect) {
  * RDW_ALLCHILDREN; Wine dlls/user.exe16/window.c ~701, UpdateWindow16 -> RedrawWindow). */
 static void update_tree(HWND16 hwnd) {
   UWnd *w = user_wnd(hwnd);
-  HWND16 c;
   if (!w || !(w->style & WS_VISIBLE)) return;
   if (w->nupd) SendMessage(hwnd, WM_PAINT, 0, 0);
   w = user_wnd(hwnd); /* the procedure may have destroyed it */
-  for (c = w ? w->child : 0; c;) {
-    UWnd *cw = user_wnd(c);
-    HWND16 next = cw ? cw->next : 0;
-    update_tree(c);
-    c = user_wnd(next) ? next : 0; /* a paint handler may destroy the next sibling */
+  if (!w) return;
+  {
+    /* Snapshot the children first: handles are reused slots, so a link read after a paint
+     * handler ran may lead into an unrelated window (even back into this parent). Visit an
+     * entry only if it is still alive and still a child of hwnd. */
+    HWND16 kids[UW_MAX];
+    unsigned n = 0;
+    for (const UWnd *c = user_wnd(w->child); c && n < UW_MAX; c = user_wnd(c->next)) kids[n++] = user_hwnd(c);
+    for (unsigned i = 0; i < n; i++) {
+      const UWnd *cw = user_wnd(kids[i]);
+      if (cw && cw->parent == hwnd) update_tree(kids[i]);
+    }
   }
 }
 

@@ -396,6 +396,56 @@ static void test_update_window_children_and_hidden(void) {
   DestroyWindow(h);
 }
 
+/* update_tree must not follow a stale sibling link (stars-0z4.6). A's WM_PAINT destroys the
+ * next sibling B and creates a popup Z that reuses B's handle slot; Z's own sibling link leads
+ * back to P (new top-level windows go on top of the desktop's list), so a guard that only
+ * checks "handle in use" re-enters P. Expect exactly P, A, C, each once, in that order. */
+static HWND16 g_ut_b, g_ut_z;
+static int g_ut_done;
+static int hook_destroy_sibling(HWND16 h, uint16_t msg, uint16_t wp, uint32_t lp) {
+  if (msg == WM_PAINT && !g_ut_done && strcmp(label_of(h), "A") == 0) {
+    g_ut_done = 1;
+    DestroyWindow(g_ut_b);
+    g_ut_z = mk("Z", CLS, "z", WS_POPUP | WS_VISIBLE, 300, 300, 20, 20, 0, 0);
+  }
+  return hook_paint(h, msg, wp, lp);
+}
+
+static void test_update_tree_stale_sibling(void) {
+  HWND16 p, a, b, c;
+  p = mk("P", CLS, "p", TOP, 0, 0, 200, 150, 0, 0);
+  a = mk("A", CLS, "a", WS_CHILD | WS_VISIBLE, 0, 0, 20, 20, p, 1);
+  b = mk("B", CLS, "b", WS_CHILD | WS_VISIBLE, 30, 0, 20, 20, p, 2);
+  c = mk("C", CLS, "c", WS_CHILD | WS_VISIBLE, 60, 0, 20, 20, p, 3);
+  CHECK(p && a && b && c);
+  paint_reset(0);
+  while (PeekMessage(g_msgp, 0, WM_PAINT, WM_PAINT, PM_REMOVE)) DispatchMessage(g_msgp);
+  InvalidateRect(p, rect_p(0, 0, 5, 5), 0);
+  InvalidateRect(a, rect_p(0, 0, 5, 5), 0);
+  InvalidateRect(b, rect_p(0, 0, 5, 5), 0);
+  InvalidateRect(c, rect_p(0, 0, 5, 5), 0);
+  g_ut_b = b;
+  g_ut_z = 0;
+  g_ut_done = 0;
+  g_hook = hook_destroy_sibling;
+  log_clear();
+  UpdateWindow(p);
+  CHECK_EQ(g_ut_z, b); /* the handle slot really was reused, or the test proves nothing */
+  {
+    char paints[128] = "";
+    for (int i = 0; i < g_nlog; i++)
+      if (g_log[i].msg == WM_PAINT)
+        snprintf(paints + strlen(paints), sizeof paints - strlen(paints), "%s%s:PAINT", paints[0] ? " " : "",
+                 label_of(g_log[i].hwnd));
+    if (strcmp(paints, "P:PAINT A:PAINT C:PAINT") != 0) fprintf(stderr, "paint log: %s\n", paints);
+    CHECK(strcmp(paints, "P:PAINT A:PAINT C:PAINT") == 0); /* each exactly once, P not re-entered */
+  }
+  g_hook = NULL;
+  CHECK_EQ(user_window_nupd(c), 0);
+  DestroyWindow(p);
+  if (IsWindow(g_ut_z)) DestroyWindow(g_ut_z);
+}
+
 static void test_erase_flag_without_brush(void) {
   HWND16 w;
   g_hook = NULL;
@@ -658,6 +708,7 @@ int main(void) {
   test_dispatch();
   test_invalidate_update_paint();
   test_update_window_children_and_hidden();
+  test_update_tree_stale_sibling();
   test_erase_flag_without_brush();
   test_paint_clip_and_erase();
   test_paint_synthesis_order();

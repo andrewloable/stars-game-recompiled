@@ -1,0 +1,15 @@
+# Original Stars! 2.6i distribution files (copyrighted, the user's licensed copy). Never commit.
+/original/
+# Registration serials. Never commit.
+/private/
+# Generated reverse-engineering artifacts: Ghidra project, dumps, frame captures.
+/re/
+# Build output.
+/build/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

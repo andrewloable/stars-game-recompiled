@@ -1,12 +1,22 @@
 /* Exact x87 arithmetic on 80-bit extended values (Berkeley SoftFloat 3e extF80).
  * The original C runtime runs the FPU with 64-bit precision control (control word
- * 0x037F, docs/CONVENTIONS.md "Floating point"), so a basic operation is rounded
+ * 0x037F or 0x1330, docs/CONVENTIONS.md "Floating point"), so a basic operation is rounded
  * to a 64-bit significand and only then to the 53-bit double the game stores
  * (FSTP m64). Plain C double does the second rounding only, and differs.
  *
  * The control word set by fp80_set_cw drives the precision (PC, bits 8-9) and the
- * rounding mode (RC, bits 10-11) of every operation below. Exceptions are masked
- * (as in 0x037F): overflow gives infinity, invalid gives the indefinite value.
+ * rounding mode (RC, bits 10-11) of every operation below.
+ *
+ * Exceptions (owner decision: full runs use FPU_CW_DEFAULT = 0x1330 with IM, DM, ZM, OM
+ * unmasked). Every operation raises the x87 exception flags it would raise (IE, DE, ZE,
+ * OE, UE, PE; x87 status-word bit layout) into a sticky word read with fp80_exceptions().
+ * The numeric result is ALWAYS the masked-response IEEE value (infinity, indefinite NaN,
+ * denormal result). When a raised exception is UNMASKED in the control word the real CPU
+ * traps (to the game's handler at 34:0x1db4) and the destination is not written; fp80
+ * then calls the handler set by fp80_set_trap_handler (if any) with the unmasked bits,
+ * and the caller must treat the result as invalid. The handler is where a harness stops
+ * with a recorded error. There is no vectoring into the game's handler and no stack /
+ * status-word state is rolled back (docs/CONVENTIONS.md "Floating point").
  */
 #ifndef STARS_RUNTIME_FP80_H
 #define STARS_RUNTIME_FP80_H
@@ -18,6 +28,19 @@
 typedef extFloat80_t Fp80;
 
 #define FP80_CW_DEFAULT 0x037Fu /* FNINIT value: PC = 64-bit, RC = nearest, all masked */
+
+/* x87 exception flag bits (status word layout). */
+#define FP80_EXC_IE 0x01u /* invalid operation */
+#define FP80_EXC_DE 0x02u /* denormal operand */
+#define FP80_EXC_ZE 0x04u /* divide by zero */
+#define FP80_EXC_OE 0x08u /* overflow */
+#define FP80_EXC_UE 0x10u /* underflow */
+#define FP80_EXC_PE 0x20u /* precision (inexact) */
+
+typedef void (*Fp80TrapFn)(uint16_t unmasked);
+void fp80_set_trap_handler(Fp80TrapFn fn); /* NULL = none (default) */
+void fp80_clear_exceptions(void);
+uint16_t fp80_exceptions(void); /* sticky flags raised since the last clear */
 
 void fp80_set_cw(uint16_t cw);
 uint16_t fp80_get_cw(void);

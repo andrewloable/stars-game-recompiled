@@ -104,6 +104,7 @@ typedef struct Surf {
 } Surf;
 
 GdiState *gdi_state(void);
+void gdi_obj_ref(uint16_t h, int delta); /* adjusts the selection count of an object */
 DCObj *gdi_dc_get(HDC16 h);
 bool dc_surface(const DCObj *dc, Surf *s);
 

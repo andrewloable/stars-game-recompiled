@@ -32,6 +32,9 @@ void vfs_shutdown(void);
 void rt_clock_set(int year, int month, int day, int hour, int minute, int second);
 void rt_clock_get(int *year, int *month, int *day, int *hour, int *minute, int *second);
 int rt_clock_weekday(void); /* 0 = Sunday */
+/* Milliseconds since 1980-01-01 00:00:00 modulo 2^32 (the date clock; GetTickCount subtracts its value at user_init), always a multiple of
+ * 1000: the clock has one-second resolution. */
+uint32_t rt_clock_ms(void);
 
 /* ---- host interface ---- */
 

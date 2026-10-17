@@ -74,6 +74,12 @@ void ValidateRect(HWND16 hwnd, FARPTR lpRect) {
 static void update_tree(HWND16 hwnd) {
   UWnd *w = user_wnd(hwnd);
   if (!w || !(w->style & WS_VISIBLE)) return;
+  if (w->ncdirty) { /* the non-client area first (Windows 3.1 look, stars-0z4.9) */
+    w->ncdirty = 0;
+    SendMessage(hwnd, WM_NCPAINT, 1, 0);
+    w = user_wnd(hwnd);
+    if (!w) return;
+  }
   if (w->nupd) SendMessage(hwnd, WM_PAINT, 0, 0);
   w = user_wnd(hwnd); /* the procedure may have destroyed it */
   if (!w) return;
@@ -104,7 +110,7 @@ static HWND16 find_child_to_repaint(const UWnd *parent) {
   for (const UWnd *c = user_wnd(parent->child); c; c = user_wnd(c->next)) {
     HWND16 r;
     if (!(c->style & WS_VISIBLE)) continue;
-    if (c->nupd) return user_hwnd(c);
+    if (c->nupd || c->ncdirty) return user_hwnd(c);
     if (!(c->style & WS_MINIMIZE) && (r = find_child_to_repaint(c)) != 0) return r;
   }
   return 0;
@@ -137,7 +143,7 @@ static RECT16 window_rect_screen(const UWnd *c) {
   return r_make(ox, oy, ox + (c->wrect.right - c->wrect.left), oy + (c->wrect.bottom - c->wrect.top));
 }
 
-HDC16 user_get_dc(HWND16 h, const RECT16 *paint_clip) {
+static HDC16 get_dc_impl(HWND16 h, const RECT16 *paint_clip, bool whole) {
   UWnd *w;
   HDC16 dc;
   RECT16 clip, excl[MAX_EXCL];
@@ -148,13 +154,15 @@ HDC16 user_get_dc(HWND16 h, const RECT16 *paint_clip) {
   if (!w) return 0;
   dc = gdi_create_screen_dc();
   if (!dc) return 0;
-  user_client_origin(w, &ox, &oy);
+  if (whole) user_window_origin(w, &ox, &oy);
+  else user_client_origin(w, &ox, &oy);
   gdi_dc_set_origin(dc, (int16_t)ox, (int16_t)oy);
   if (!user_visible(h)) {
     gdi_dc_set_hard_clip(dc, 0, 0, 0, 0);
     return dc;
   }
-  clip = r_make(ox, oy, ox + (w->crect.right - w->crect.left), oy + (w->crect.bottom - w->crect.top));
+  if (whole) clip = r_make(ox, oy, ox + (w->wrect.right - w->wrect.left), oy + (w->wrect.bottom - w->wrect.top));
+  else clip = r_make(ox, oy, ox + (w->crect.right - w->crect.left), oy + (w->crect.bottom - w->crect.top));
   for (UWnd *a = user_wnd(w->parent); a && user_hwnd(a) != user_desktop(); a = user_wnd(a->parent)) {
     int ax, ay;
     user_client_origin(a, &ax, &ay);
@@ -162,7 +170,7 @@ HDC16 user_get_dc(HWND16 h, const RECT16 *paint_clip) {
   }
   clip = r_isect(clip, r_make(0, 0, GDI_SCREEN_W, GDI_SCREEN_H));
   if (paint_clip) clip = r_isect(clip, r_offset(*paint_clip, ox, oy));
-  if (w->style & WS_CLIPCHILDREN)
+  if ((w->style & WS_CLIPCHILDREN) && !whole)
     for (const UWnd *c = user_wnd(w->child); c && n < MAX_EXCL; c = user_wnd(c->next))
       if (c->style & WS_VISIBLE) excl[n++] = window_rect_screen(c);
   for (const UWnd *a = w; a && user_hwnd(a) != user_desktop(); a = user_wnd(a->parent)) {
@@ -179,6 +187,10 @@ HDC16 user_get_dc(HWND16 h, const RECT16 *paint_clip) {
   }
   return dc;
 }
+
+HDC16 user_get_dc(HWND16 h, const RECT16 *paint_clip) { return get_dc_impl(h, paint_clip, false); }
+/* A DC for the whole window, non-client area included (GetWindowDC, WM_NCPAINT). */
+HDC16 user_get_window_dc(HWND16 h) { return get_dc_impl(h, NULL, true); }
 
 HDC16 GetDC(HWND16 hwnd) { return user_get_dc(hwnd, NULL); }
 
@@ -226,15 +238,6 @@ void EndPaint(HWND16 hwnd, FARPTR lpPaint) {
 
 /* ---- default handling ---- */
 
-/* Windows 3.1 default system colours, indexed by COLOR_xxx. USER part 2 (stars-0z4.7) owns
- * GetSysColor and replaces this table. */
-static const COLORREF16 SYSCOLORS[21] = {
-    GDI_RGB(192, 192, 192), GDI_RGB(192, 192, 192), GDI_RGB(0, 0, 128),   GDI_RGB(255, 255, 255), GDI_RGB(255, 255, 255),
-    GDI_RGB(255, 255, 255), GDI_RGB(0, 0, 0),       GDI_RGB(0, 0, 0),     GDI_RGB(0, 0, 0),       GDI_RGB(255, 255, 255),
-    GDI_RGB(192, 192, 192), GDI_RGB(192, 192, 192), GDI_RGB(128, 128, 128), GDI_RGB(0, 0, 128),   GDI_RGB(255, 255, 255),
-    GDI_RGB(192, 192, 192), GDI_RGB(128, 128, 128), GDI_RGB(128, 128, 128), GDI_RGB(0, 0, 0),     GDI_RGB(0, 0, 0),
-    GDI_RGB(255, 255, 255)};
-
 uint32_t user_def_erase(HWND16 h, HDC16 hdc) {
   UserState *st = user_state();
   UWnd *w = user_wnd(h);
@@ -247,7 +250,7 @@ uint32_t user_def_erase(HWND16 h, HDC16 hdc) {
   if (hbr < 0x100) { /* COLOR_xxx + 1 */
     unsigned idx = (unsigned)hbr - 1;
     if (idx >= 21) return 0;
-    brush = CreateSolidBrush(SYSCOLORS[idx]);
+    brush = CreateSolidBrush(user_syscolor(idx));
     temp = true;
   } else {
     brush = hbr;

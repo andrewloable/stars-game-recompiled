@@ -24,8 +24,10 @@
  *
  * UNVERIFIED (also listed in docs/inventory.md section 13):
  *   - Windows 3.1 itself for every order above (no SDK text, no capture).
- *   - BeginPaint here sends only WM_ERASEBKGND; Wine/Windows also send WM_NCPAINT first
- *     (no non-client area until task 0z4.9).
+ *   - BeginPaint itself sends only WM_ERASEBKGND. WM_NCPAINT is sent by the message loop /
+ *     UpdateWindow BEFORE WM_PAINT, and only for a window whose non-client area needs drawing
+ *     (stars-0z4.9). The WS_OVERLAPPED windows here have no non-client area, so no WM_NCPAINT
+ *     appears in these logs; test_user_nc.c pins the WS_OVERLAPPEDWINDOW order.
  *   - rcPaint is the bounding box of the invalid area (the update region is a list of at
  *     most 8 rectangles; more are merged into their bounding box).
  *   - Queue capacity is 256 messages (Windows 3.1's default application queue holds 8).
@@ -38,9 +40,15 @@
 
 #define CLS "TESTCLS"
 #define CLS_W "TESTCLSW" /* white class brush */
-#define TOP (WS_OVERLAPPEDWINDOW | WS_VISIBLE)
+/* stars-0z4.9: these tests pin message order and plain geometry with WS_OVERLAPPED (= 0), which in this
+ * runtime means a top-level window WITHOUT caption, frame or scroll bars. That is an artefact of this
+ * runtime: the SDK says an overlapped window has a caption and a border, and Wine's create_window
+ * corrects the style (the correction itself is a follow-up). It keeps these tests free of the
+ * non-client area. The game's frame is WS_OVERLAPPEDWINDOW (0x00CF0000); that case is covered by
+ * test_user_nc.c (test_overlappedwindow_message_order) and test_visual_chrome.c. */
+#define TOP (WS_OVERLAPPED | WS_VISIBLE)
 /* Hidden windows have no pending WM_PAINT, so the queue tests see only what they post. */
-#define HID WS_OVERLAPPEDWINDOW
+#define HID WS_OVERLAPPED
 #define SCR_W 800
 
 static FARPTR g_msgp;
@@ -304,8 +312,8 @@ static void test_invalidate_update_paint(void) {
   log_clear();
   InvalidateRect(w, rect_p(10, 20, 60, 70), 1);
   UpdateWindow(w);
-  /* Exactly one WM_PAINT; BeginPaint sends WM_ERASEBKGND from inside it (UNVERIFIED: Windows
-   * also sends WM_NCPAINT first). */
+  /* Exactly one WM_PAINT; BeginPaint sends WM_ERASEBKGND from inside it. No WM_NCPAINT: this
+   * WS_OVERLAPPED window has no non-client area, and its frame is not invalid (UNVERIFIED). */
   CHECK_LOG("W:PAINT W:ERASEBKGND");
   CHECK_EQ(g_paint.n, 1);
   CHECK_EQ(g_paint.ps.rcPaint.left, 10);
@@ -595,7 +603,7 @@ static void test_getdc_clipping(void) {
 
   /* A hidden window has an empty visible region (UNVERIFIED). */
   screen_white();
-  h = mk("H", CLS, "h", WS_OVERLAPPEDWINDOW, 100, 100, 100, 100, 0, 0);
+  h = mk("H", CLS, "h", WS_OVERLAPPED, 100, 100, 100, 100, 0, 0);
   fill_black(h, 0, 0, 100, 100);
   CHECK_EQ(pix(150, 150), 255);
   DestroyWindow(h);

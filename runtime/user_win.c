@@ -88,12 +88,19 @@ int user_init(void) {
   d->wrect = d->crect = r_make(0, 0, GDI_SCREEN_W, GDI_SCREEN_H);
   strcpy(d->text, "");
   user_input_exhausted = 0;
+  user_input_init(); /* USER part 2 state (focus, timers, cursor) */
+  user_ctl_init();   /* BUTTON, STATIC and SCROLLBAR classes (stars-0z4.10) */
+  user_dlg_init();   /* the dialog class (stars-0z4.12) */
+  user_menu_init();  /* menus, accelerators, the pop-up window class (stars-0z4.13) */
+  user_paint_desktop(); /* Windows 3.1 look: the desktop background (COLOR_BACKGROUND) */
   return 0;
 }
 
 void user_shutdown(void) {
   UserState *st = user_state();
   if (!st) return;
+  user_ctl_shutdown();
+  user_menu_shutdown();
   for (unsigned i = 0; i < UW_MAX; i++)
     if (st->w[i].used && st->w[i].extra_off) rt_free(mem_arena() + st->w[i].extra_off);
   rt_free(st);
@@ -120,6 +127,15 @@ unsigned user_window_nupd(HWND16 hwnd) {
 static uint32_t cb_proc(uint16_t off, HWND16 h, uint16_t msg, uint16_t wp, uint32_t lp) {
   switch (off) {
     case 0x0000: return user_def_window_proc(h, msg, wp, lp);
+    case 0x0010: return user_msgbox_proc(h, msg, wp, lp); /* the MessageBox window class (user_msgbox.c) */
+    case 0x0020: return user_button_proc(h, msg, wp, lp);     /* standard controls (stars-0z4.10): ctl_button.c */
+    case 0x0030: return user_static_proc(h, msg, wp, lp);     /* ctl_static.c */
+    case 0x0040: return user_scrollbar_proc(h, msg, wp, lp);  /* ctl_scroll.c */
+    case 0x0080: return user_dialog_proc(h, msg, wp, lp);     /* the dialog class: DefDlgProc (dialog.c, stars-0z4.12) */
+    case 0x0090: return user_menu_popup_proc(h, msg, wp, lp); /* the pop-up menu class (menu_ui.c, stars-0z4.13) */
+    case 0x0050: return user_edit_proc(h, msg, wp, lp);       /* standard controls part 2 (stars-0z4.11): ctl_edit.c */
+    case 0x0060: return user_listbox_proc(h, msg, wp, lp);    /* ctl_listbox.c */
+    case 0x0070: return user_combobox_proc(h, msg, wp, lp);   /* ctl_combo.c */
     default: return 0;
   }
 }
@@ -356,6 +372,9 @@ static HWND16 create_window(FARPTR clsname, FARPTR title, uint32_t style, uint32
   far_strcpy(w->text, sizeof w->text, title);
   if (!(style & (WS_CHILD | WS_POPUP))) w->need_size = 1;
   h = user_hwnd(w);
+  w->minpos = (POINT16){-1, -1};
+  w->hmenu = user_menu_for_new_window(h, style, hmenu, st->c[ci].hinst ? st->c[ci].hinst : hinst, st->c[ci].menu); /* the class menu is loaded from the class's module */ /* menu bar: stars-0z4.13 */
+  user_sb_reset(h);
   link_wnd(w, (style & WS_CHILD) ? HWND_BOTTOM : HWND_TOP); /* window.c:6117-6122: children go to the bottom */
 
   csp = user_scratch(sizeof(CREATESTRUCT16), &hcs);
@@ -486,6 +505,11 @@ static HWND16 create_window(FARPTR clsname, FARPTR title, uint32_t style, uint32
   return user_wnd(h) ? h : 0;
 }
 
+HWND16 user_create_window_ex(uint32_t exstyle, FARPTR lpClassName, FARPTR lpWindowName, uint32_t dwStyle, int16_t x, int16_t y,
+                             int16_t cx, int16_t cy, HWND16 hwndParent, HANDLE16 hMenu, HANDLE16 hInstance, FARPTR lpParam) {
+  return create_window(lpClassName, lpWindowName, dwStyle, exstyle, x, y, cx, cy, hwndParent, hMenu, hInstance, lpParam);
+}
+
 HWND16 CreateWindow(FARPTR lpClassName, FARPTR lpWindowName, uint32_t dwStyle, int16_t x, int16_t y, int16_t cx,
                     int16_t cy, HWND16 hwndParent, HANDLE16 hMenu, HANDLE16 hInstance, FARPTR lpParam) {
   return create_window(lpClassName, lpWindowName, dwStyle, 0, x, y, cx, cy, hwndParent, hMenu, hInstance, lpParam);
@@ -500,6 +524,9 @@ static void invalidate_tree(const UWnd *p, RECT16 r, HWND16 skip) {
   for (UWnd *s = user_wnd(p->child); s; s = user_wnd(s->next)) {
     RECT16 o;
     if (user_hwnd(s) == skip || !(s->style & WS_VISIBLE)) continue;
+    if (!r_empty(r_isect(r, s->wrect)) && (s->crect.left != s->wrect.left || s->crect.top != s->wrect.top ||
+                                          s->crect.right != s->wrect.right || s->crect.bottom != s->wrect.bottom))
+      s->ncdirty = 1; /* the exposed area reaches the frame, caption or scroll bars: WM_NCPAINT */
     o = r_isect(r, s->crect); /* s's client rectangle is in p's client coordinates, like r */
     if (r_empty(o)) continue;
     o = r_offset(o, -s->crect.left, -s->crect.top);
@@ -514,6 +541,7 @@ static void invalidate_exposed(HWND16 h, const UWnd *w, RECT16 old_wrect) {
    * siblings included (RDW_ALLCHILDREN). The desktop's children are the top-level windows. */
   UWnd *p = user_wnd(w->parent);
   if (!p) return;
+  if (IS_DESKTOP(w->parent)) user_nc_expose(h, old_wrect); /* Windows 3.1 look: the desktop shows through */
   if (!IS_DESKTOP(w->parent)) {
     RECT16 r = r_isect(old_wrect, r_make(0, 0, p->crect.right - p->crect.left, p->crect.bottom - p->crect.top));
     if (!r_empty(r)) user_upd_add(p, r, true);
@@ -633,7 +661,23 @@ static bool set_window_pos(HWND16 h, HWND16 after, int16_t x, int16_t y, int16_t
     if (vis && (shown_now || geometry || (flags & SWP_FRAMECHANGED))) {
       RECT16 all = r_make(0, 0, w->crect.right - w->crect.left, w->crect.bottom - w->crect.top);
       user_upd_add(w, all, true);
+      invalidate_tree(w, all, 0); /* stars-0z4.17: visible children too (RDW_ALLCHILDREN) */
+      if (w->crect.left != w->wrect.left || w->crect.top != w->wrect.top || w->crect.right != w->wrect.right ||
+          w->crect.bottom != w->wrect.bottom)
+        w->ncdirty = 1; /* there is a non-client area to draw (Windows 3.1 look) */
     }
+  }
+
+  /* A top-level window that was JUST shown (shown_now) is activated unless SWP_NOACTIVATE is set
+   * (window.c show_window ~4190 -> set_active_window(hwnd, NULL, FALSE, TRUE), before WM_WINDOWPOSCHANGED
+   * goes out). UNVERIFIED against Windows 3.1: the order of the activation messages is Wine's.
+   * KNOWN DIFFERENCE: Wine's set_window_pos activates on any SetWindowPos without SWP_NOACTIVATE
+   * or SWP_HIDEWINDOW; here only the shown case activates (all the game's startup needs). */
+  if (shown_now && !(flags & SWP_NOACTIVATE) && user_wnd(h) && !(user_wnd(h)->style & WS_CHILD))
+    user_activate_shown(h);
+  if (!user_wnd(h)) {
+    user_scratch_free(hwp);
+    return false;
   }
 
   /* W-swp: 4225-4234. WINDOWPOSCHANGED always carries the final position. */
@@ -666,11 +710,14 @@ uint16_t ShowWindow(HWND16 hwnd, int16_t cmd) {
   UWnd *w = user_wnd(hwnd);
   bool was_visible, show_flag = true, state_change = false;
   uint16_t swp = 0;
+  RECT16 tgt = {0, 0, 0, 0};
+  bool have_tgt = false;
   if (!w || IS_DESKTOP(hwnd)) return 0;
   was_visible = (w->style & WS_VISIBLE) != 0;
 
-  /* W-show: window.c show_window 5040-5090. Minimising and maximising set the style bits only;
-   * their geometry belongs to the Windows 3.1 look task (stars-0z4.9). */
+  /* W-show: window.c show_window 5040-5090. Minimising, maximising and restoring also move the
+   * window (Windows 3.1 look, stars-0z4.9: user_nc_place; the restored rectangle is kept in
+   * UWnd.nrect). */
   switch (cmd) {
     case SW_HIDE:
       if (!was_visible) return 0;
@@ -680,15 +727,23 @@ uint16_t ShowWindow(HWND16 hwnd, int16_t cmd) {
     case SW_SHOWMINIMIZED:
     case SW_MINIMIZE:
     case SW_SHOWMINNOACTIVE:
+      if (!(w->style & (WS_MINIMIZE | WS_MAXIMIZE))) w->nrect = w->wrect;
       w->style = (w->style | WS_MINIMIZE) & ~(uint32_t)WS_MAXIMIZE;
       swp = SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_STATECHANGED;
+      user_nc_place(hwnd, 2, &tgt);
+      have_tgt = true;
       if (!was_visible) swp |= SWP_SHOWWINDOW;
       if (cmd == SW_SHOWMINNOACTIVE) swp |= SWP_NOACTIVATE;
       state_change = true;
       break;
     case SW_SHOWMAXIMIZED:
+      if (!(w->style & (WS_MINIMIZE | WS_MAXIMIZE))) w->nrect = w->wrect;
       w->style = (w->style | WS_MAXIMIZE) & ~(uint32_t)WS_MINIMIZE;
       swp = SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_STATECHANGED;
+      user_nc_place(hwnd, 1, &tgt);
+      w = user_wnd(hwnd);
+      if (!w) goto done;
+      have_tgt = true;
       if (!was_visible) swp |= SWP_SHOWWINDOW;
       state_change = true;
       break;
@@ -709,6 +764,8 @@ uint16_t ShowWindow(HWND16 hwnd, int16_t cmd) {
         w->style &= ~(uint32_t)(WS_MINIMIZE | WS_MAXIMIZE);
         swp |= SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE | SWP_STATECHANGED;
         state_change = true;
+        tgt = w->nrect;
+        have_tgt = !r_empty(tgt);
       } else {
         if (was_visible) goto done;
         swp |= SWP_NOSIZE | SWP_NOMOVE;
@@ -729,7 +786,11 @@ uint16_t ShowWindow(HWND16 hwnd, int16_t cmd) {
     if (show_flag) w->style |= WS_VISIBLE;
     else w->style &= ~(uint32_t)WS_VISIBLE;
   } else {
-    set_window_pos(hwnd, HWND_TOP, 0, 0, 0, 0, swp);
+    if (have_tgt)
+      set_window_pos(hwnd, HWND_TOP, tgt.left, tgt.top, (int16_t)(tgt.right - tgt.left), (int16_t)(tgt.bottom - tgt.top),
+                     (uint16_t)(swp & ~(SWP_NOSIZE | SWP_NOMOVE)));
+    else
+      set_window_pos(hwnd, HWND_TOP, 0, 0, 0, 0, swp);
   }
   if (cmd == SW_HIDE) goto done;
   /* W-show: 5128-5139, the first size message of a window created hidden. */
@@ -782,6 +843,10 @@ static void destroy_window_internal(HWND16 h) {
   w = user_wnd(h);
   if (!w) return;
   user_queue_purge(h); /* W-cleanup: server/window.c:584 */
+  user_sb_reset(h);
+  user_menu_window_gone(h, w->hmenu, w->hsys);
+  w = user_wnd(h);
+  if (!w) return;
   if (w->extra_off) rt_free(mem_arena() + w->extra_off);
   memset(w, 0, sizeof *w);
 }
@@ -796,6 +861,8 @@ uint16_t DestroyWindow(HWND16 hwnd) {
     if ((w->style & (WS_CHILD | WS_POPUP)) == WS_CHILD && !(w->exstyle & WS_EX_NOPARENTNOTIFY) && !IS_DESKTOP(w->parent))
       snd(w->parent, WM_PARENTNOTIFY, WM_DESTROY, make_long(hwnd, w->id));
   }
+  if (!user_wnd(hwnd)) return 1;
+  user_input_pre_destroy(hwnd); /* capture is released early (USER part 2) */
   if (!user_wnd(hwnd)) return 1;
   w = user_wnd(hwnd);
   if (w->style & WS_VISIBLE) {
@@ -818,6 +885,10 @@ uint16_t DestroyWindow(HWND16 hwnd) {
       if (ow && ow->owner == hwnd) DestroyWindow(owned[i]); /* still alive and still owned */
     }
   }
+  if (!user_wnd(hwnd)) return 1;
+  /* activate_other_window runs inside send_destroy_message (5398-5410), after the hide and the
+   * owned windows; the focus of a destroyed child moves to its parent after its SW_HIDE. */
+  user_input_leave_destroy(hwnd);
   if (!user_wnd(hwnd)) return 1;
   send_destroy_message(hwnd);
   if (!user_wnd(hwnd)) return 1;
@@ -882,16 +953,19 @@ void MapWindowPoints(HWND16 hwndFrom, HWND16 hwndTo, FARPTR lpPoints, uint16_t c
   }
 }
 
-static HWND16 hit_children(const UWnd *parent, int x, int y) {
+static HWND16 hit_children(const UWnd *parent, int x, int y, const HWND16 *skip, unsigned nskip) {
   for (const UWnd *c = user_wnd(parent->child); c; c = user_wnd(c->next)) {
     int ox, oy;
     RECT16 wr;
+    bool skipped = false;
     if (!(c->style & WS_VISIBLE)) continue;
+    for (unsigned i = 0; i < nskip; i++) skipped |= skip[i] == user_hwnd(c);
+    if (skipped) continue; /* answered HTTRANSPARENT: the window below gets the point */
     user_window_origin(c, &ox, &oy);
     wr = r_make(ox, oy, ox + (c->wrect.right - c->wrect.left), oy + (c->wrect.bottom - c->wrect.top));
     if (!r_contains(wr, x, y)) continue;
     {
-      HWND16 deeper = hit_children(c, x, y);
+      HWND16 deeper = hit_children(c, x, y, skip, nskip);
       return deeper ? deeper : user_hwnd(c);
     }
   }
@@ -900,7 +974,15 @@ static HWND16 hit_children(const UWnd *parent, int x, int y) {
 
 HWND16 WindowFromPoint(uint32_t pt) {
   UserState *st = user_state();
-  HWND16 h = hit_children(&st->w[0], (int16_t)(pt & 0xFFFF), (int16_t)(pt >> 16));
+  HWND16 h = hit_children(&st->w[0], (int16_t)(pt & 0xFFFF), (int16_t)(pt >> 16), NULL, 0);
+  return h ? h : user_desktop();
+}
+
+/* WindowFromPoint that passes over the windows in skip (those that answered WM_NCHITTEST with
+ * HTTRANSPARENT, e.g. group boxes and static text), together with their children. */
+HWND16 user_window_from_point_skip(uint32_t pt, const HWND16 *skip, unsigned nskip) {
+  UserState *st = user_state();
+  HWND16 h = hit_children(&st->w[0], (int16_t)(pt & 0xFFFF), (int16_t)(pt >> 16), skip, nskip);
   return h ? h : user_desktop();
 }
 
@@ -967,7 +1049,10 @@ uint16_t EnableWindow(HWND16 hwnd, uint16_t bEnable) {
     if (!w) return 0;
     was_disabled = (w->style & WS_DISABLED) != 0;
     w->style |= WS_DISABLED;
-    if (!was_disabled) snd(hwnd, WM_ENABLE, 0, 0);
+    if (!was_disabled) {
+      user_input_disabled(hwnd); /* a disabled window cannot have the focus (window.c 1157) */
+      snd(hwnd, WM_ENABLE, 0, 0);
+    }
   }
   return was_disabled ? 1 : 0;
 }
@@ -1061,7 +1146,7 @@ uint16_t GetWindowPlacement(HWND16 hwnd, FARPTR lpwndpl) {
   p->showCmd = (w->style & WS_MINIMIZE) ? SW_SHOWMINIMIZED : (w->style & WS_MAXIMIZE) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
   p->ptMinPosition = (POINT16){-1, -1};
   p->ptMaxPosition = (POINT16){-1, -1};
-  p->rcNormalPosition = w->wrect;
+  p->rcNormalPosition = (w->style & (WS_MINIMIZE | WS_MAXIMIZE)) ? w->nrect : w->wrect;
   return 1;
 }
 
@@ -1098,6 +1183,7 @@ uint32_t user_def_window_proc(HWND16 h, uint16_t msg, uint16_t wp, uint32_t lp) 
       return 0;
     case WM_SETTEXT:
       far_strcpy(w->text, sizeof w->text, lp);
+      if (w->style & WS_VISIBLE) user_nc_paint_caption(h);
       return 1;
     case WM_GETTEXT: {
       size_t n = strlen(w->text);
@@ -1110,7 +1196,26 @@ uint32_t user_def_window_proc(HWND16 h, uint16_t msg, uint16_t wp, uint32_t lp) 
       return (uint32_t)n;
     }
     case WM_GETTEXTLENGTH: return (uint32_t)strlen(w->text);
-    case WM_NCHITTEST: return 1; /* HTCLIENT: non-client hit-testing is task stars-0z4.9 */
+    case WM_SETCURSOR: return user_def_setcursor(h, wp, lp); /* USER part 2: user_misc.c */
+    case WM_CANCELMODE: { /* releases the capture of this window (USER part 2) */
+      UserState *st = user_state();
+      if (st->in.capture == h) st->in.capture = 0;
+      return 0;
+    }
+    case WM_NCCALCSIZE:
+    case WM_NCHITTEST:
+    case WM_NCPAINT:
+    case WM_NCACTIVATE:
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDBLCLK:
+    case WM_SYSCOMMAND:
+    case WM_SYSKEYDOWN:
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+    case WM_SYSCHAR:
+      return user_nc_def_message(h, msg, wp, lp); /* Windows 3.1 look: user_nc.c; keys: menu_ui.c */
+    case WM_CTLCOLOR: return user_def_ctlcolor(wp, (uint16_t)(lp >> 16)); /* a system brush (inventory.md section 13, rule 15) */
     case WM_ERASEBKGND: return user_def_erase(h, wp);
     case WM_PAINT: return user_def_paint(h);
     default: return 0;

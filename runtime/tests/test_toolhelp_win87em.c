@@ -184,7 +184,8 @@ static void test_fpmath_direct(void) {
   r.ax = 9; r.bx = 0; r.fpcw = 0x037F; r.fpsw = 0x0001; r.cf = 1;
   CHECK_EQ(win87em_fpmath(&r), 0);
   CHECK_EQ(r.ax, 0);
-  CHECK_EQ(r.fpcw, 0x1330);
+  CHECK_EQ(r.fpcw, FPU_CW_DEFAULT);
+  CHECK_EQ(r.fpcw, 0x1332 & ~0x00C3);
   CHECK_EQ(r.fpsw & 0x80FF, 0);
   CHECK_EQ(r.cf, 0);
   r.bx = 0x0B;

@@ -6,15 +6,19 @@
 #include <string.h>
 
 #include "harness/harness.h"
+#include "harness/toolhelp_win87em_thunks.h"
 #include "runtime/fp80.h"
 #include "runtime/mem.h"
 #include "test.h"
 
 #define EXE "original/stars26i.exe"
 
-/* The HARNESS MODEL of the control word (FNINIT state, PC = 11b, RC = 00b, all masked),
- * not a measurement; the real word is likely 0x1330/0x1332. See docs/CONVENTIONS.md. */
+/* PINNED_CW is the all-masked FNINIT word (0x037F). The equivalence tests below use it
+ * because they compare NORMAL results, which do not depend on the mask bits (and an
+ * unmasked overflow on the Unicorn FPU would trap instead of giving an IEEE result).
+ * The control word full runs use is FPU_CW_DEFAULT (0x1330, owner decision). */
 #define PINNED_CW 0x037Fu
+#define NO_CW 0xFFFFu /* run_startup: leave the word harness_load / the registration set */
 #define N_PAIRS 100000
 #define N_PAIRS_CW 10000
 
@@ -63,14 +67,37 @@ static void run_startup(uint16_t cw_in) {
   harness_register("KERNEL", 23, h_one);        /* LockSegment */
   harness_register("KERNEL", 24, h_one);        /* UnlockSegment */
   harness_trace(lo, hi, on_startup_insn, NULL);
-  harness_set_fpcw(cw_in);
+  if (cw_in != NO_CW) harness_set_fpcw(cw_in);
   harness_call(MEM_SEL_SEG(34), 0x001A, HCONV_CDECL, NULL, 0, NULL);
   harness_trace(0, 0, NULL, NULL);
   harness_set_quiet(false);
 }
 
-/* The 0x037F pin is the HARNESS MODEL (harness_init loads it), not a measurement of
- * the real word: the start-up path preserves whatever word it is entered with. */
+/* Owner decision 2026-10-15 (stars-ckz): full runs use 0x1330. harness_load puts it in the
+ * FPU and the start-up path preserves it, with and without the WIN87EM registration. */
+static void test_default_control_word(void) {
+  CHECK_EQ(FPU_CW_DEFAULT, 0x1330);
+  CHECK_EQ(harness_fpcw(), FPU_CW_DEFAULT);          /* right after harness_load */
+  run_startup(NO_CW);                                /* no registration of WIN87EM */
+  CHECK_EQ(g_winmain_hits, 1);
+  CHECK_EQ(g_cw_at_winmain, FPU_CW_DEFAULT);
+  CHECK_EQ(g_cw_at_winmain & 0x3F, 0x30);            /* IM, DM, ZM, OM unmasked; UM, PM masked */
+  CHECK_EQ((g_cw_at_winmain >> 8) & 3, 3);           /* PC = 64-bit */
+}
+
+/* With WIN87EM registered, __fpMath BX = 0 programs the word itself (runtime/win87em.c uses
+ * the same FPU_CW_DEFAULT): entering with the old all-masked 0x037F must still give 0x1330
+ * at WinMain, so a stale constant in win87em.c alone fails here. The registration is
+ * permanent for the rest of the run, so this test runs last. */
+static void test_default_control_word_registered(void) {
+  toolhelp_win87em_register();
+  harness_set_fpcw(0x037F);
+  run_startup(NO_CW);
+  CHECK_EQ(g_winmain_hits, 1);
+  CHECK_EQ(g_cw_at_winmain, FPU_CW_DEFAULT);
+}
+
+/* 0x037F is the all-masked model word, entered explicitly: the path preserves it. */
 static void test_control_word_at_winmain(void) {
   run_startup(PINNED_CW);
   CHECK_EQ(g_winmain_hits, 1);
@@ -349,15 +376,112 @@ static void test_other_control_words(void) {
   }
 }
 
+/* ---- 4. Exceptional paths under FPU_CW_DEFAULT (0x1330: IM, DM, ZM, OM unmasked) ----
+ * On the real machine an unmasked exception traps to the game's handler at 34:0x1db4.
+ * Unicorn's x87 does NOT deliver the trap: it computes the IEEE result and only sets the
+ * status flags (ES and the sticky bits). So the harness checks the status word after a
+ * top-level harness_call (opt-in harness_set_fp_trap_check) and records an error, and
+ * fp80 reports the same exceptions through fp80_exceptions() and a trap handler.
+ * MEASURED GAP: the Unicorn x87 sets a status flag only for division by zero (and also
+ * for 0/0, where a real x87 sets IE). It sets NOTHING for inf-inf, overflow at FSTP m64
+ * or a denormal operand, so the harness check cannot see those traps; fp80 can. */
+#define X_IE 0x01u
+#define X_DE 0x02u
+#define X_ZE 0x04u
+#define X_OE 0x08u
+
+static unsigned g_trap_calls;
+static uint16_t g_trap_last;
+static void on_fp80_trap(uint16_t unmasked) { g_trap_calls++; g_trap_last = unmasked; }
+
+/* One FADD/FSUB/FMUL/FDIV of a and b (doubles, stored with FSTP m64) on the Unicorn FPU. */
+static int unicorn_exc(int op, uint64_t a, uint64_t b, uint16_t cw, uint16_t *pending) {
+  uint64_t rec[BATCH][3];
+  Regs16 io;
+  memset(rec, 0, sizeof rec);
+  rec[0][0] = a; rec[0][1] = b;
+  memcpy(LIN((uint32_t)g_data << 16), rec, BATCH * 24u);
+  memset(&io, 0, sizeof io);
+  io.es = g_data; io.si = 0; io.cx = 1;
+  harness_set_fp_trap_check(true);
+  harness_set_fpcw(cw);
+  harness_set_fpsw(0);
+  harness_set_quiet(true);
+  harness_call(g_code_arith[op], 0, HCONV_CDECL, NULL, 0, &io);
+  harness_set_quiet(false);
+  harness_set_fp_trap_check(false);
+  *pending = harness_fp_trap_pending();
+  return harness_last_error();
+}
+
+/* The same operation in fp80: exceptions raised (x87 layout) and the trap handler calls. */
+static uint16_t fp80_exc(int op, uint64_t a, uint64_t b, uint16_t cw) {
+  fp80_set_cw(cw);
+  fp80_clear_exceptions();
+  g_trap_calls = 0;
+  fp80_set_trap_handler(on_fp80_trap);
+  (void)fp80_to_f64(fp80_op(op, fp80_from_f64(dbl(a)), fp80_from_f64(dbl(b))));
+  fp80_set_trap_handler(NULL);
+  return fp80_exceptions();
+}
+
+static void test_exceptional_paths(void) {
+  struct { const char *name; int op; uint64_t a, b; uint16_t want; bool uni; } t[] = {
+    {"divide by zero 1/0",   3, 0x3FF0000000000000ull, 0, X_ZE, true},
+    {"invalid 0/0",          3, 0, 0, X_IE, true}, /* Unicorn reports ZE for 0/0 (real x87: IE) */
+    {"invalid inf-inf",      1, 0x7FF0000000000000ull, 0x7FF0000000000000ull, X_IE, false},
+    {"overflow at FSTP m64", 2, 0x7FE0000000000000ull, 0x4010000000000000ull, X_OE, false},
+    {"denormal operand",     0, 1, 0x3FF0000000000000ull, X_DE, false},
+  };
+  setup_code();
+  for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
+    uint16_t pend, e = fp80_exc(t[i].op, t[i].a, t[i].b, FPU_CW_DEFAULT);
+    /* fp80: the intended exception is raised and, being unmasked, trapped */
+    CHECK(e & t[i].want);
+    if (!(e & t[i].want)) fprintf(stderr, "  case: %s\n", t[i].name);
+    CHECK_EQ(g_trap_calls, 1);
+    CHECK(g_trap_last & t[i].want);
+    CHECK_EQ(g_trap_last & ~0x3Fu, 0);
+    /* masked (0x037F): the same flags are raised but no trap is delivered */
+    e = fp80_exc(t[i].op, t[i].a, t[i].b, PINNED_CW);
+    CHECK(e & t[i].want);
+    CHECK_EQ(g_trap_calls, 0);
+    /* Unicorn at 0x1330: recorded error, never a silent success */
+    if (t[i].uni) {
+      CHECK(unicorn_exc(t[i].op, t[i].a, t[i].b, FPU_CW_DEFAULT, &pend) != 0);
+      CHECK(pend != 0);
+    } else { /* Unicorn raises no flag at all: the harness cannot see this trap (documented gap) */
+      CHECK_EQ(unicorn_exc(t[i].op, t[i].a, t[i].b, FPU_CW_DEFAULT, &pend), 0);
+      CHECK_EQ(pend, 0);
+    }
+    /* Unicorn masked: no error */
+    CHECK_EQ(unicorn_exc(t[i].op, t[i].a, t[i].b, PINNED_CW, &pend), 0);
+    CHECK_EQ(pend, 0);
+  }
+  /* A normal operation under 0x1330 is not an error (only the masked PE flag is set). */
+  {
+    uint16_t pend;
+    CHECK_EQ(unicorn_exc(0, 0x3FF0000000000000ull, 0x4000000000000000ull, FPU_CW_DEFAULT, &pend), 0);
+    CHECK_EQ(pend, 0);
+    CHECK_EQ(fp80_exc(0, 0x3FF0000000000000ull, 0x4000000000000000ull, FPU_CW_DEFAULT) & 0x0F, 0);
+    CHECK_EQ(g_trap_calls, 0);
+  }
+  fp80_set_cw(PINNED_CW);
+  harness_set_fpcw(PINNED_CW);
+}
+
 int main(void) {
   if (harness_load(EXE) != 0) {
     fprintf(stderr, "harness_load failed\n");
     return 1;
   }
+  test_default_control_word();
   test_control_word_at_winmain();
   test_control_word_sentinel();
   test_equivalence();
   test_other_control_words();
+  test_exceptional_paths();
+  test_default_control_word_registered();
   harness_shutdown();
   return TEST_DONE();
 }

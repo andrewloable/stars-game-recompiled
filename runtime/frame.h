@@ -9,8 +9,9 @@
  * is bit-identical to the original's. FRAME_ENTER(n) mirrors "ENTER n,0" (PUSH
  * BP; MOV BP,SP; SUB SP,n) and FRAME_LEAVE mirrors "LEAVE" (MOV SP,BP; POP BP)
  * on the emulated stack (rt_ss:rt_sp, frame pointer rt_bp). BP_LOCAL(type, off)
- * is the lvalue of the local at BP+off (off is negative for locals). The local
- * must be naturally aligned.
+ * is the lvalue of the local at BP+off (off is negative for locals). Original
+ * locals can sit at odd BP offsets, so the access is unaligned-safe (a packed
+ * wrapper struct gives the lvalue alignment 1); no alignment is required.
  *
  * CALL_ORIG(seg, off, conv, nargs, ...) calls code that is not decompiled yet,
  * passing nargs 16-bit words (PASCAL: push order; CDECL: declaration order; a
@@ -37,7 +38,8 @@ void rt_wasm_missing(const char *what) __attribute__((noreturn));
 
 #define FRAME_ENTER(n) rt_frame_enter((uint16_t)(n))
 #define FRAME_LEAVE() rt_frame_leave()
-#define BP_LOCAL(type, off) (*(type *)LIN(MK_FP(rt_ss, (uint16_t)(rt_bp + (off)))))
+#define BP_LOCAL(type, off) \
+  (((struct { type v; } __attribute__((packed)) *)LIN(MK_FP(rt_ss, (uint16_t)(rt_bp + (off)))))->v)
 
 /* rt_call_far(fn, conv, args, nargs): call the far pointer fn (selector:offset,
  * a selector below 0x100 is an NE segment number) with nargs 16-bit words. In

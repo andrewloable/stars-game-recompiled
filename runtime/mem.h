@@ -47,6 +47,13 @@
  * WF_80x87 0x400 = 0x0429. It deliberately overrides the 1043 in win16_api.inc. */
 #define WINFLAGS_DEFAULT 0x0429
 
+/* x87 control word full runs use. Owner-decided 2026-10-15 (stars-ckz): 0x1330, the word
+ * Wine's WIN87EM init programs: PC = 11b (64-bit), RC = 00b (nearest even), IM/DM/ZM/OM
+ * unmasked (invalid, denormal, divide by zero, overflow trap to the game's handler at
+ * 34:0x1db4), UM/PM masked. Shared by the harness start-up and runtime/win87em.c BX=0/2.
+ * An inference about the real Win3.1 word, not a measurement (docs/CONVENTIONS.md). */
+#define FPU_CW_DEFAULT 0x1330
+
 #define MK_FP(sel, off) ((((uint32_t)(sel)) << 16) | ((uint32_t)(uint16_t)(off)))
 #define FP_SEG(fp) ((uint16_t)((uint32_t)(fp) >> 16))
 #define FP_OFF(fp) ((uint16_t)((uint32_t)(fp) & 0xFFFFu))

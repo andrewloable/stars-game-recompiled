@@ -124,6 +124,8 @@ static HLogEntry *g_log;
 static size_t g_n_log, g_cap_log;
 static uint16_t g_winflags = WINFLAGS_DEFAULT;
 static bool g_strict, g_quiet;
+static bool g_fp_trap_check;
+static uint16_t g_fp_trap_pending;
 static uint16_t g_stack_top, g_stack_limit, g_call_sp;
 static uc_hook g_trace_hook;
 static bool g_trace_on;
@@ -374,6 +376,8 @@ bool harness_stopped_early(void) { return g_stopped_early; }
 unsigned harness_stop_after_api_remaining(void) { return g_api_limit > g_api_count ? g_api_limit - g_api_count : 0; }
 void harness_regs(Regs16 *out) { get_regs(out); }
 int harness_last_error(void) { return g_last_err; }
+void harness_set_fp_trap_check(bool on) { g_fp_trap_check = on; }
+uint16_t harness_fp_trap_pending(void) { return g_fp_trap_pending; }
 uint16_t harness_fpcw(void) {
   uint16_t v = 0;
   if (g_uc) uc_reg_read(g_uc, UC_X86_REG_FPCW, &v);
@@ -475,6 +479,11 @@ uint32_t harness_call(uint16_t sel, uint16_t off, int conv, const uint16_t *args
     g_abort = false;
     g_api_count = 0;
     g_last_err = 0;
+    g_fp_trap_pending = 0;
+    if (g_fp_trap_check) {
+      uint16_t sw = harness_fpsw();
+      harness_set_fpsw((uint16_t)(sw & ~0x803Fu)); /* clear ES and the exception flags */
+    }
     wr(UC_X86_REG_AX, 0); wr(UC_X86_REG_BX, 0); wr(UC_X86_REG_CX, 0); wr(UC_X86_REG_DX, 0);
     wr(UC_X86_REG_SI, 0); wr(UC_X86_REG_DI, 0); wr(UC_X86_REG_BP, 0); wr(UC_X86_REG_ES, 0);
   }
@@ -532,6 +541,17 @@ uint32_t harness_call(uint16_t sel, uint16_t off, int conv, const uint16_t *args
   if (err != UC_ERR_OK) {
     fprintf(stderr, "harness: uc_emu_start failed: %s\n", uc_strerror(err));
     g_last_err = (int)err;
+  }
+
+  if (!nested && g_fp_trap_check && g_last_err == 0) {
+    uint16_t pend = (uint16_t)(harness_fpsw() & ~harness_fpcw() & 0x3Fu);
+    if (pend) {
+      g_fp_trap_pending = pend;
+      if (!g_quiet)
+        fprintf(stderr, "harness: unmasked x87 exception 0x%02x (cw 0x%04x): the real game traps to 34:0x1db4\n",
+                pend, harness_fpcw());
+      g_last_err = -1;
+    }
   }
 
   get_regs(&out);
@@ -662,13 +682,11 @@ int harness_init(void) {
     return -1;
   }
   /* Unicorn starts with FPCW = 0 (24-bit precision), which no real x87 has after
-   * reset. Put the FNINIT state in place. 0x037F (all exceptions masked) is a MODEL,
-   * not a measurement: the C runtime start-up path saves the word (FNSTCW), runs FNINIT
-   * and restores it (FLDCW at 34:0x26b1), so it is net-neutral and whatever word is
-   * set here reaches WinMain. The real word is most likely 0x1330/0x1332 (PC = 11b,
-   * IM/DM/ZM/OM unmasked, handler 34:0x1db4); the two differ only on exceptional
-   * paths. docs/CONVENTIONS.md "Floating point". */
-  harness_set_fpcw(0x037F);
+   * reset. Load FPU_CW_DEFAULT (runtime/mem.h, owner decision 0x1330: PC = 11b, IM/DM/ZM/OM
+   * unmasked, handler 34:0x1db4). The C runtime start-up path saves the word (FNSTCW),
+   * runs FNINIT and restores it (FLDCW at 34:0x26b1), so it is net-neutral and whatever
+   * word is set here reaches WinMain. docs/CONVENTIONS.md "Floating point". */
+  harness_set_fpcw(FPU_CW_DEFAULT);
   g_n_thunks = 0;
   g_depth = 0;
   g_last_err = 0;

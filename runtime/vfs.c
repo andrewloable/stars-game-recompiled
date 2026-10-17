@@ -146,6 +146,22 @@ int rt_clock_weekday(void) {
   return (int)(((days % 7) + 7 + 4) % 7);
 }
 
+uint32_t rt_clock_ms(void) {
+  State *s = st();
+  int64_t y, m, d, era, yoe, doy, doe, days;
+  if (!s) return 0;
+  y = s->year;
+  m = s->month;
+  d = s->day;
+  y -= m <= 2;
+  era = (y >= 0 ? y : y - 399) / 400;
+  yoe = y - era * 400;
+  doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  days = era * 146097 + doe - 719468 - 3652; /* 1970-01-01 -> 1980-01-01 is 3652 days */
+  return (uint32_t)((((days * 24 + s->hour) * 60 + s->minute) * 60 + s->second) * 1000);
+}
+
 /* ---- path handling ---- */
 
 static int up(int c) { return (c >= 'a' && c <= 'z') ? c - 32 : c; }

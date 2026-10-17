@@ -130,6 +130,15 @@ void harness_set_fpcw(uint16_t v);
 uint16_t harness_fpsw(void); /* x87 status word (UC_X86_REG_FPSW) */
 void harness_set_fpsw(uint16_t v);
 void harness_stop_emu(void);
+/* Unmasked x87 exceptions (owner decision: FPU_CW_DEFAULT = 0x1330, docs/CONVENTIONS.md).
+ * Unicorn computes the IEEE result and sets the status flags but does NOT vector to the
+ * game's handler (34:0x1db4). With the check on, a top-level harness_call clears the
+ * exception flags (IE DE ZE OE UE PE) on entry and, if on return any flag is set whose
+ * mask bit in the control word is 0, ends with harness_last_error() != 0 and a stderr line
+ * (unless quiet). harness_fp_trap_pending() returns those unmasked flags (x87 status
+ * layout: IE 1, DE 2, ZE 4, OE 8, UE 0x10, PE 0x20) of the most recent such call. */
+void harness_set_fp_trap_check(bool on);
+uint16_t harness_fp_trap_pending(void);
 /* Fatal abort: stops the running emulation AND every enclosing one. harness_stop_emu stops
  * only the innermost uc_emu_start; harness_call propagates this sticky abort up through the
  * nested calls (an API handler calling game code), so the outer game code never continues.

@@ -42,10 +42,10 @@ void win87em_shutdown(void) {
 }
 
 /* WIN87_Init: FNINIT, set control word 0x1332 (stored whole, loaded without bits 0xC3,
- * i.e. 0x1330), FCLEX, AX = 0. CF is cleared: the caller tests it for failure. */
+ * i.e. FPU_CW_DEFAULT = 0x1330, runtime/mem.h), FCLEX, AX = 0. CF is cleared: the caller tests it for failure. */
 static void w87_init(State *s, W87Regs *r) {
   s->ctrl1 = W87_INIT_WORD;
-  r->fpcw = (uint16_t)(W87_INIT_WORD & ~0x00C3u);
+  r->fpcw = FPU_CW_DEFAULT; /* == W87_INIT_WORD & ~0x00C3 */
   r->fpsw = (uint16_t)(r->fpsw & ~0x80FFu); /* FCLEX */
   s->status2 = 0;
   r->ax = 0;

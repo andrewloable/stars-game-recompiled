@@ -112,7 +112,7 @@ $(NEDUMP): tools/nedump.c runtime/ne.h build/libruntime.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(INCLUDES) $< build/libruntime.a $(LDFLAGS) -o $@
 
-.PHONY: all test doctor clean check-split
+.PHONY: all test doctor clean check-split lint
 
 # The runtime must not depend on the harness (the split is one-way: harness -> runtime).
 check-split:
@@ -120,10 +120,17 @@ check-split:
 	  echo "check-split: runtime/ must not include harness/ headers"; exit 1; \
 	fi
 
+# Lint the local decompiled sources (tools/lint_src.py). src/, tests/scenarios/ and
+# docs/functions.csv are local-only, so it is a no-op where they are absent.
+lint:
+	python3 tools/lint_src.py
+
 all: $(LIBS) $(TEST_BINS) $(GEN_IMPORTS) $(NEDUMP)
 
 test: check-split $(TEST_BINS) $(GEN_IMPORTS)
 	@fail=0; \
+	echo "== python3 tools/lint_src.py"; \
+	python3 tools/lint_src.py || fail=1; \
 	for t in $(TEST_BINS); do \
 	  echo "== $$t"; \
 	  ./$$t || fail=1; \

@@ -56,6 +56,8 @@ static uint32_t g_user_ret = 0x12340000u; /* WM_USER return value of procedure C
 /* Hook run inside procedure A for every message; returning nonzero means "handled" (the
  * procedure then returns 0 without calling DefWindowProc). */
 static int (*g_hook)(HWND16 h, uint16_t msg, uint16_t wp, uint32_t lp);
+/* Value the procedure returns when g_hook handled the message (default 0). */
+static uint32_t g_hook_ret;
 
 static const struct {
   uint16_t msg;
@@ -70,6 +72,10 @@ static const struct {
     {WM_NCDESTROY, "NCDESTROY"}, {WM_NCCALCSIZE, "NCCALCSIZE"}, {WM_NCPAINT, "NCPAINT"},
     {WM_PARENTNOTIFY, "PARENTNOTIFY"}, {WM_USER, "USER"}, {WM_USER + 1, "USER1"},
     {WM_USER + 2, "USER2"}, {WM_USER + 3, "USER3"}, {WM_QUIT, "QUIT"}, {WM_TIMER, "TIMER"},
+    /* USER part 2 (task stars-0z4.7) */
+    {WM_ACTIVATE, "ACTIVATE"}, {WM_SETFOCUS, "SETFOCUS"}, {WM_KILLFOCUS, "KILLFOCUS"},
+    {WM_SETCURSOR, "SETCURSOR"}, {WM_NCHITTEST, "NCHITTEST"}, {WM_NCACTIVATE, "NCACTIVATE"},
+    {WM_KEYDOWN, "KEYDOWN"}, {WM_KEYUP, "KEYUP"}, {WM_CHAR, "CHAR"},
 };
 
 static const char *msg_name(uint16_t m) {
@@ -183,7 +189,7 @@ static uint32_t common_proc(char tag, uint16_t ss, uint16_t sp, int forward) {
   if (tag == 'C' && msg == WM_USER) return g_user_ret;
   if (msg == WM_NCCREATE && !g_nccreate_ret) return 0;
   if (msg == WM_CREATE && g_create_ret) return g_create_ret;
-  if (g_hook && g_hook(h, msg, wp, lp)) return 0;
+  if (g_hook && g_hook(h, msg, wp, lp)) return g_hook_ret;
   return unpack_ret(DefWindowProc(h, msg, wp, lp));
 }
 
@@ -305,6 +311,7 @@ static int fixture_open(void) {
   g_nccreate_ret = 1;
   g_create_ret = 0;
   g_hook = NULL;
+  g_hook_ret = 0;
   return 0;
 }
 

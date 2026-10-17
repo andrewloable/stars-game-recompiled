@@ -5,6 +5,7 @@
 #include "harness/gdi_thunks.h"
 
 #include "harness/harness.h"
+#include "harness/text_thunks.h"
 #include "runtime/gdi.h"
 
 static uint32_t w32(const HCall *c, unsigned n) {
@@ -93,4 +94,5 @@ static const struct {
 void gdi_register(void) {
   for (size_t i = 0; i < sizeof g_apis / sizeof g_apis[0]; i++)
     harness_register(g_apis[i].module, g_apis[i].ordinal, g_apis[i].fn);
+  text_register(); /* GDI text functions and USER DrawText (runtime/text.h) */
 }

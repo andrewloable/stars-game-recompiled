@@ -225,6 +225,21 @@ static void test_frame(void) {
   rt_sp = rt_bp = 0;
 }
 
+/* Original locals can sit at odd BP offsets (rule d): BP_LOCAL must be unaligned-safe (UBSan). */
+static void test_frame_odd_offsets(void) {
+  rt_ss = MEM_SEL_DGROUP;
+  rt_sp = harness_stack_top();
+  rt_bp = 0;
+  FRAME_ENTER(8);
+  BP_LOCAL(uint16_t, -3) = 0xBEEF;
+  BP_LOCAL(uint32_t, -7) = 0x12345678u;
+  CHECK_EQ(BP_LOCAL(uint16_t, -3), 0xBEEF);
+  CHECK_EQ(BP_LOCAL(uint32_t, -7), 0x12345678u);
+  CHECK_EQ(*(uint8_t *)LIN(MK_FP(MEM_SEL_DGROUP, (uint16_t)(rt_bp - 3))), 0xEF);
+  FRAME_LEAVE();
+  rt_sp = rt_bp = 0;
+}
+
 
 /* ======================================================================
  * Review fixes (stars-dwf.3 items A-K). Every test below was written first
@@ -962,6 +977,7 @@ int main(void) {
   test_isolation();
   test_rt_call_far_modes();
   test_frame();
+  test_frame_odd_offsets();
   test_A_arg_slot_writes();
   test_B_original_run_mode();
   test_C_fallback_keeps_frame();

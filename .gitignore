@@ -21,3 +21,6 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# Python bytecode (owner decision 2026-10-17: never track)
+__pycache__/

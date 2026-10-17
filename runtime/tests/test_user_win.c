@@ -32,9 +32,11 @@
  *
  * UNVERIFIED (marked again in docs/inventory.md section 13):
  *   - Windows 3.1 itself is not confirmed for any order here (no SDK text, no capture).
- *   - Activation messages (WM_NCACTIVATE, WM_ACTIVATE, WM_SETFOCUS, WM_CHILDACTIVATE) that
- *     Wine sends from ShowWindow/SetWindowPos are not generated: activation belongs to USER
- *     part 2. WM_NCPAINT and WM_ERASEBKGND that Wine sends from inside ShowWindow
+ *   - Activation: a top-level window that becomes visible without SWP_NOACTIVATE is activated
+ *     (stars-0z4.7; window.c show_window ~4190, set_active_window(hwnd, NULL, FALSE, TRUE)), so
+ *     WM_NCACTIVATE, WM_ACTIVATE and WM_SETFOCUS follow WM_WINDOWPOSCHANGING and precede
+ *     WM_WINDOWPOSCHANGED. That order is Wine's and UNVERIFIED for Windows 3.1; WM_ACTIVATEAPP,
+ *     WM_CHILDACTIVATE and the z-order step of activation are not generated. WM_NCPAINT and WM_ERASEBKGND that Wine sends from inside ShowWindow
  *     (erase_now, window.c 4212-4216) are deferred to the first BeginPaint here.
  *   - The relative order WM_MOVE, WM_SIZE sent by DefWindowProc(WM_WINDOWPOSCHANGED) (W-defpos)
  *     is Wine's; the creation path in W-create/W-show sends WM_SIZE before WM_MOVE.
@@ -46,7 +48,13 @@
 
 #define CLS "TESTCLS"
 #define CLS_C "TESTCLSC"
-#define TOP (WS_OVERLAPPEDWINDOW | WS_VISIBLE)
+/* stars-0z4.9: these tests pin message order and plain geometry with WS_OVERLAPPED (= 0), which in this
+ * runtime means a top-level window WITHOUT caption, frame or scroll bars. That is an artefact of this
+ * runtime: the SDK says an overlapped window has a caption and a border, and Wine's create_window
+ * corrects the style (the correction itself is a follow-up). It keeps these tests free of the
+ * non-client area. The game's frame is WS_OVERLAPPEDWINDOW (0x00CF0000); that case is covered by
+ * test_user_nc.c (test_overlappedwindow_message_order) and test_visual_chrome.c. */
+#define TOP (WS_OVERLAPPED | WS_VISIBLE)
 
 static void test_win16_constants(void) {
   /* Win16 numbering (windows.h of the 3.1 SDK; checked against Wine's include/wine/winuser16.h
@@ -94,7 +102,7 @@ static void test_create_visible_overlapped(void) {
   p = mk("P", CLS, "Main", TOP, 10, 20, 300, 200, 0, 0);
   CHECK(p != 0);
   CHECK_LOG("P:GETMINMAXINFO P:NCCREATE P:NCCALCSIZE P:CREATE P:SHOWWINDOW P:WINDOWPOSCHANGING "
-            "P:WINDOWPOSCHANGED P:SIZE P:MOVE");
+            "P:NCACTIVATE P:ACTIVATE P:SETFOCUS P:WINDOWPOSCHANGED P:SIZE P:MOVE");
   e = log_find("P", WM_NCCREATE, 0);
   CHECK(e != NULL);
   if (e) {
@@ -119,7 +127,7 @@ static void test_create_visible_overlapped(void) {
   e = log_find("P", WM_SIZE, 0);
   if (e) {
     CHECK_EQ(e->wp, SIZE_RESTORED);
-    CHECK_EQ(e->lp, 300u | (200u << 16)); /* client size: no non-client area yet (task 0z4.9) */
+    CHECK_EQ(e->lp, 300u | (200u << 16)); /* client size = window size: WS_OVERLAPPED has no non-client area here */
   }
   e = log_find("P", WM_MOVE, 0);
   if (e) CHECK_EQ(e->lp, 10u | (20u << 16));
@@ -134,13 +142,13 @@ static void test_create_visible_overlapped(void) {
 static void test_create_hidden_then_show_hide(void) {
   HWND16 p;
   log_clear();
-  p = mk("P", CLS, "Hid", WS_OVERLAPPEDWINDOW, 0, 0, 100, 80, 0, 0);
+  p = mk("P", CLS, "Hid", WS_OVERLAPPED, 0, 0, 100, 80, 0, 0);
   CHECK_LOG("P:GETMINMAXINFO P:NCCREATE P:NCCALCSIZE P:CREATE");
   CHECK_EQ(IsWindowVisible(p), 0);
 
   log_clear();
   CHECK_EQ(ShowWindow(p, SW_SHOW), 0); /* previous state: hidden */
-  CHECK_LOG("P:SHOWWINDOW P:WINDOWPOSCHANGING P:WINDOWPOSCHANGED P:SIZE P:MOVE");
+  CHECK_LOG("P:SHOWWINDOW P:WINDOWPOSCHANGING P:NCACTIVATE P:ACTIVATE P:SETFOCUS P:WINDOWPOSCHANGED P:SIZE P:MOVE");
   CHECK_EQ(IsWindowVisible(p), 1);
   {
     LogEnt *chg = log_find("P", WM_WINDOWPOSCHANGED, 0);
@@ -237,7 +245,7 @@ static void test_destroy_tree_order(void) {
    * one by one. New children go to the BOTTOM of the z-order (window.c:6117-6122), so the
    * list is C1, C2 and C2's child G: WM_DESTROY walks it parent first, WM_NCDESTROY children
    * first. */
-  CHECK_LOG("P:WINDOWPOSCHANGING P:WINDOWPOSCHANGED P:DESTROY C1:DESTROY C2:DESTROY G:DESTROY "
+  CHECK_LOG("P:WINDOWPOSCHANGING P:WINDOWPOSCHANGED P:NCACTIVATE P:ACTIVATE P:KILLFOCUS P:DESTROY C1:DESTROY C2:DESTROY G:DESTROY "
             "C1:NCDESTROY G:NCDESTROY C2:NCDESTROY P:NCDESTROY");
   CHECK_EQ(IsWindow(p), 0);
   CHECK_EQ(IsWindow(c1), 0);
@@ -432,7 +440,7 @@ static void test_text_enable_tree(void) {
   /* W-enable. EnableWindow returns whether the window WAS disabled. */
   log_clear();
   CHECK_EQ(EnableWindow(p, 0), 0);
-  CHECK_LOG("P:CANCELMODE P:ENABLE");
+  CHECK_LOG("P:CANCELMODE P:KILLFOCUS P:ENABLE");
   CHECK_EQ(log_find("P", WM_ENABLE, 0)->wp, 0);
   CHECK_EQ(IsWindowEnabled(p), 0);
   CHECK((GetWindowLong(p, GWL_STYLE) & WS_DISABLED) != 0);
@@ -576,6 +584,32 @@ static void test_owner_kept_during_destroy(void) {
   CHECK_EQ(user_window_count(), 0);
 }
 
+/* stars-0z4.17: showing a window invalidates its visible children too (Wine redraw_window with
+ * RDW_ALLCHILDREN). Before the fix only the shown window got an update region. */
+static void test_show_invalidates_children(void) {
+  HWND16 p, c, c2;
+  p = mk("P", CLS, "popup", WS_POPUP, 0, 0, 200, 100, 0, 0);
+  c = mk("C", CLS, "child", WS_CHILD | WS_VISIBLE, 10, 10, 50, 50, p, 1);
+  c2 = mk("D", CLS, "grandchild", WS_CHILD | WS_VISIBLE, 5, 5, 20, 20, c, 2);
+  CHECK(p && c && c2);
+  ValidateRect(c, 0);
+  ValidateRect(c2, 0);
+  CHECK_EQ(user_window_nupd(c), 0);
+  ShowWindow(p, SW_SHOW);
+  CHECK(user_window_nupd(p) != 0);
+  CHECK(user_window_nupd(c) != 0);
+  CHECK(user_window_nupd(c2) != 0);
+  UpdateWindow(c);
+  CHECK_EQ(user_window_nupd(c), 0); /* painted */
+  ShowWindow(p, SW_HIDE);
+  ValidateRect(c, 0);
+  ValidateRect(c2, 0);
+  ShowWindow(p, SW_SHOW); /* a second show */
+  CHECK(user_window_nupd(c) != 0);
+  CHECK(user_window_nupd(c2) != 0);
+  DestroyWindow(p);
+}
+
 int main(void) {
   if (fixture_open() != 0) return 1;
   test_win16_constants();
@@ -595,6 +629,7 @@ int main(void) {
   test_hide_popup_invalidates_child_pane();
   test_popup_owner_is_toplevel();
   test_owner_kept_during_destroy();
+  test_show_invalidates_children();
   fixture_close();
   return TEST_DONE();
 }

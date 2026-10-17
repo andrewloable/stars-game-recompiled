@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "runtime/gdi_internal.h"
+#include "runtime/text.h"
 
 static uint32_t g_state_off; /* arena offset of the GdiState, 0 = not initialised */
 static GdiSelectFontFn g_font_hook;
@@ -72,6 +73,8 @@ static void ref(uint16_t h, int d) {
   ObjSlot *s = slot_of(h);
   if (s) s->refs = (uint16_t)(s->refs + d);
 }
+/* For the fonts task (runtime/text.c): selecting a font into a DC counts as a reference. */
+void gdi_obj_ref(uint16_t h, int d) { ref(h, d); }
 
 DCObj *gdi_dc_get(HDC16 h) { return gdi_obj_get(h, GDI_OBJ_DC); }
 
@@ -163,7 +166,9 @@ int gdi_init(void) {
     g->default_bitmap = hb;
     slot_of(hb)->stock = 1;
   }
-  return (g->stock[BLACK_PEN] && g->stock[WHITE_BRUSH] && g->default_bitmap && g->default_palette) ? 0 : -1;
+  if (g->stock[BLACK_PEN] && g->stock[WHITE_BRUSH] && g->default_bitmap && g->default_palette)
+    return text_init(); /* stock fonts and the SelectObject font hook (runtime/text.c) */
+  return -1;
 }
 
 void gdi_shutdown(void) {
@@ -202,6 +207,8 @@ static HDC16 dc_new(bool memory) {
   ref(dc->hpen, 1);
   ref(dc->hbrush, 1);
   ref(dc->hpal, 1);
+  dc->hfont = g->stock[SYSTEM_FONT];
+  ref(dc->hfont, 1);
   if (memory) {
     dc->hbitmap = g->default_bitmap;
     ref(dc->hbitmap, 1);
@@ -221,6 +228,7 @@ uint16_t DeleteDC(HDC16 hdc) {
   ref(dc->hpen, -1);
   ref(dc->hbrush, -1);
   ref(dc->hpal, -1);
+  ref(dc->hfont, -1);
   if (dc->memory) ref(dc->hbitmap, -1);
   gdi_clip_free(dc);
   gdi_obj_free(hdc);

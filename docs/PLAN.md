@@ -45,6 +45,7 @@ Measured on 2026-10-15 from `original/stars26i.exe` (SHA-256 `5770dade…198e`, 
 | 13 | helpdeco 2.1.4 (GPL-2.0, SourceForge) or `winhlp` (PyPI) | Converts `stars!.hlp` to RTF or HTML for the in-browser help viewer. | not installed |
 | 14 | Angular, latest stable (CLI via `npx @angular/cli@latest`) | The browser frontend in `web/`: canvas host, input, file import/export, IndexedDB. Static build, no backend (decision 11). | npm dependency of `web/` (not created yet) |
 | 14 | Berkeley SoftFloat 3e (BSD-3) | Exact 80-bit x87 arithmetic, needed only if the C runtime runs the FPU at 64-bit mantissa precision (decided by a task). | vendor only if needed |
+| 15 | FreeType 2.14.3 (FreeType Licence / GPLv2 dual) | Optional build-time tool only: `tools/genfont.c` uses it to regenerate `runtime/fontdata.c` from the OFL Liberation Sans TTFs (see `third_party/fonts/README.md`). NOT needed for `make` or `make test`, and NOT linked into the runtime or the wasm build; the generated `runtime/fontdata.c` is committed. | `brew install freetype` (only to regenerate) |
 
 Tools we build (each one a bd task):
 
@@ -113,6 +114,10 @@ Owner decisions (2026-10-15):
    bitmaps, cursors and icons come from the owner's own Windows 3.11 files in `original/win311/`
    (git-ignored), parsed by our NE loader. The emulated display is **800×600, 256 colours**: an 8-bpp
    indexed framebuffer with the 20 static colours plus logical palettes.
+   **Amended 2026-10-17 (owner):** the Windows 3.11 files are not available yet, so fonts use
+   permissively licensed look-alike fonts (licence file recorded with each font, no Microsoft
+   files), and window chrome is hand-drawn to the Windows 3.1 look. Pixel-exact checks against the
+   original files wait for the owner to supply them.
 9. **No Windows 3.11 media yet.** There is no DOSBox-X reference environment, so the task that builds
    it is blocked. Golden game files come from the original running on our harness. Visual checks are
    the owner's review of frame dumps until reference captures exist. Decision 8's asset files are

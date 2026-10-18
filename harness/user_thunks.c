@@ -122,6 +122,9 @@ static void t_ShowCursor(HCall *c) { c->ret = (uint16_t)ShowCursor(W(0)); }
 static void t_DrawIcon(HCall *c) { c->ret = DrawIcon(W(3), S(2), S(1), W(0)); }
 static void t_AdjustWindowRect(HCall *c) { AdjustWindowRect(w32(c, 3), w32(c, 1), W(0)); }
 static void t_LoadIcon(HCall *c) { c->ret = LoadIcon(W(2), w32(c, 0)); }
+static void t_LoadBitmap(HCall *c) { c->ret = LoadBitmap(W(2), w32(c, 0)); }
+/* WinHelp(word str word long): hwnd, lpHelpFile, uCommand, dwData */
+static void t_WinHelp(HCall *c) { c->ret = WinHelp(W(7), w32(c, 5), W(4), w32(c, 0)); }
 static void t_DestroyIcon(HCall *c) { c->ret = DestroyIcon(W(0)); }
 static void t_DestroyCursor(HCall *c) { c->ret = DestroyCursor(W(0)); }
 
@@ -209,7 +212,7 @@ static const struct {
     {1, t_MessageBox},           {62, t_SetScrollPos},      {63, t_GetScrollPos},
     {64, t_SetScrollRange},      {65, t_GetScrollRange},    {67, t_GetWindowDC},
     {71, t_ShowCursor},          {84, t_DrawIcon},          {102, t_AdjustWindowRect},
-    {174, t_LoadIcon},           {267, t_ShowScrollBar},    {457, t_DestroyIcon},
+    {174, t_LoadIcon},           {175, t_LoadBitmap},       {171, t_WinHelp},           {267, t_ShowScrollBar},    {457, t_DestroyIcon},
     {458, t_DestroyCursor},
     /* Standard controls part 1 (stars-0z4.10) */
     {96, t_CheckRadioButton},    {97, t_CheckDlgButton},    {98, t_IsDlgButtonChecked},

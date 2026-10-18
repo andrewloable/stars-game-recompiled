@@ -1,6 +1,6 @@
 # Decompilation and runtime conventions
 
-Rules (a) to (j) apply to every file in `src/` (stars-bfj.1). Existing rules change only with the
+Rules (a) to (j2) apply to every file in `src/` (stars-bfj.1). Existing rules change only with the
 owner's approval; new rules may be added. The "Floating point" section after them was written by
 stars-dwf.4 and is rule (g). `src/`, `tests/scenarios/` and `docs/functions.csv` are local-only
 (docs/PLAN.md decision 10). `python3 tools/lint_src.py` (also run by `make test`) enforces what a
@@ -62,7 +62,10 @@ ordinary C locals); when the callee mirrors a frame (rule d) it is called throug
 not yet decompiled: `CALL_ORIG(seg, 0xOFF, conv, nargs, ...)` (the lint rejects it once the target is
 decompiled). `CALL_ORIG` is far-only: it always makes a far call, and a NEAR convention aborts
 (`rt_call_orig` in `harness/difftest.c`). To Win16 APIs: by name (`runtime/*.h`,
-`runtime/include/win16.h`). Through a far pointer or callback: `rt_call_far`. The Win16 API call
+`runtime/include/win16.h`); native builds log each by-name call to the harness API log through
+`harness/byname.h` (included by `src/stars.h` behind `#ifndef __EMSCRIPTEN__`), exactly as the
+import thunk does, so the diff sees it. A new API needs one wrapper there; never call an import
+thunk from `src/`. Through a far pointer or callback: `rt_call_far`. The Win16 API call
 order is part of the diff.
 
 **(f) Annotations and naming.** A `DECOMP(seg, 0xOFF, name, CONV)` line directly before each
@@ -111,6 +114,25 @@ get `DIFF_FUZZ`. Coverage of the original function is at least 90 percent, or `n
 `docs/functions.csv` justify the gap. Before trusting a scenario, change one constant in the C
 function and see the DIFF fail, then restore the file and check it with `cmp`.
 
+**(j2) Test doubles.** A test double (a "stub": the first bytes of a callee in the code segment image
+are replaced so that both the ORIGINAL run and the C version's `CALL_ORIG` execute it) is allowed
+only for a callee whose real behaviour is not under test (not decompiled yet and too large or too
+state-hungry to run in isolation) and whose side effects on the state the diff compares are
+recorded, or are absent. It must never replace the function under test. The callee must be CDECL
+(the caller pops the arguments) or take no argument, and the double must be declared with the exact
+argument count of the original. Every double used by a function is listed in that function's
+`notes` in `docs/functions.csv`, with its blind spots. Make the double a logged thunk (as in
+`tests/scenarios/test_seg03.c`: `stub_install` jumps to an import registered with
+`harness_add_import`), so that the call, its argument words and its order against the Win16 API
+calls and the other doubles are entries of the API log that DIFF compares. A double that records
+only into its own memory block compares calls against each other and does not check their order
+against API calls or writes to DGROUP and far memory. Even a logged thunk records a pointer argument
+as the pointer only, and does not order the call against plain memory writes: where the pointed-to
+content or such a write matters, register a watch that records a hash of that memory at call time,
+and state in the `notes` which memory is watched and which is not. Before trusting a double, move
+the stubbed call across an API call and across the write it should follow (or precede) in the C
+version and see the DIFF fail, then restore the file and check it with `cmp`.
+
 ### Worked example: `2:0x0000` (`fn_02_0000`)
 
 `2:0x0000` is one of four same-shape functions in segment 2 (`2:0x0000`, `0x50a2`, `0x50b0`,
@@ -138,7 +160,7 @@ and `SEG_SEL(2)` to `SEG_SEL(3)` (DX differs).
 **Decision: use SoftFloat extF80 (Berkeley SoftFloat, "3e plus master changes", vendored in
 `third_party/softfloat/`), not C `double`, for every x87 basic operation in
 decompiled code.** The helpers are in `runtime/fp80.h` / `runtime/fp80.c`
-(`fp80_from_f64`, `fp80_add/sub/mul/div`, `fp80_to_f64`, `fp80_to_i16/i32`,
+(`fp80_from_f64`, `fp80_add/sub/mul/div`, `fp80_sqrt`, `fp80_to_f64`, `fp80_to_i16/i32`,
 `fp80_to_i32_ftol`, `fp80_set_cw`). A decompiled `FLD m64; FADD m64; FSTP m64` becomes
 `fp80_to_f64(fp80_add(fp80_from_f64(a), fp80_from_f64(b)))`, and values that
 stay on the x87 stack between instructions stay `Fp80`.
@@ -272,24 +294,34 @@ FISTP m16/m32 (ties and out-of-range values give the integer indefinite 0x8000 /
    `fp80_set_cw(FPU_CW_DEFAULT)` and install a trap handler that stops the run.
    `FP80_CW_DEFAULT` (0x037F, FNINIT, all masked) is only for the normal-value tests.
 4. Compare and test instructions are exact on both representations.
-5. Transcendental instructions (F2XM1, FYL2X, FPTAN, FPATAN, FSCALE, FRNDINT,
-   FSQRT, FPREM) are not covered by this proof. Their results on a real x87 and on
+5. FSQRT is covered: `fp80_sqrt` is proven against the Unicorn x87 by `test_sqrt` in
+   `harness/tests/test_fp.c` (random doubles, perfect squares and their neighbours, negative
+   operands: 0 mismatches under 0x037F, 0x137F and 0x027F). It was added for 33:0x01a0, whose
+   call to the C runtime's sqrt (34:0x0d68) is written as a helper that also reproduces the
+   runtime's stores into DGROUP and its control word change (see `crt_sqrt_34_0d68` in
+   `src/crt34.h`, used by every segment that calls 34:0x0d68; the table above lists them).
+   The proof covers zero, positive normal and negative normal operands, the reachable domain;
+   NaN, infinity and denormal operands are outside it.
+   The other transcendental instructions (F2XM1, FYL2X, FPTAN, FPATAN, FSCALE, FRNDINT,
+   FPREM) are not covered by this proof. Their results on a real x87 and on
    SoftFloat can differ in the last bit. Each one needs its own equivalence test
    when a decompiled function uses it. They occur only in segment 34 (see the
    table in `docs/inventory.md`), plus the raw-byte matches that are data.
 
 ### C runtime math functions called from the game
 
-Functions in segment 34 with `fp=1` in `docs/functions.csv` that have callers
-outside segment 34: exactly one.
+Functions in segment 34 that do floating point and have callers outside segment 34:
+two, `ftol` (`fp=1` in `docs/functions.csv`) and `sqrt` (34:0x0d68 is a 6-byte entry stub, `fp=0`,
+that jumps to 34:0x1c34, which runs FSQRT).
 
 | address | name | callers outside seg 34 | meaning |
 |---------|------|------------------------|---------|
 | `34:0x0de6` | `FUN_1108_0de6` | 42 call sites in 15 segments (5, 7, 8, 9, 10, 11, 16, 18, 21, 22, 23, 28, 30, 32, 33) | double to 32-bit long conversion (`ftol`): FISTP m64 under RC = truncate, result DX:AX. Use `fp80_to_i32_ftol` as the reference for the game's behaviour. A plain C cast `(long)d` is exact only for \|d\| < 2^31: the original wraps out-of-range values (2^32 + 5 gives 5) and gives 0 for \|d\| >= 2^63 or NaN (integer indefinite, low 32 bits). The old control word is restored. Proven by `test_fp.c` against FISTP m64 (opcode DF /7) in Unicorn under RC = 11b, 100000 seeded operands including out-of-range, 2^32 + 5, 2^63 and NaN: 0 mismatches. |
+| `34:0x0d68` | `FUN_1108_0d68` | 27 call sites in 8 segments (5 x1, 7 x6, 8 x2, 9 x3, 11 x8, 18 x5, 22 x1, 33 x1) | square root (`sqrt`): FSQRT of the operand in ST(0), run under CW = (low byte \| 0x38) \| 0x1300 (the old word is restored). DGROUP stores: the operand as a double at DS:0x1C6A only when DS:0x1E1E is 0, the result as a double at DS:0x18FC, and the byte DS:0x1C9A = 1. Use `crt_sqrt_34_0d68` in `src/crt34.h` as the reference (it uses `fp80_sqrt` and mirrors the CW change and the stores). A negative operand takes the domain-error path (matherr hook, message), which is not modelled: the helper aborts. Proven on the reachable domain only: `fp80_sqrt` against FSQRT in Unicorn by `test_sqrt` in `test_fp.c` (zero, positive normal and negative normal operands, 0 mismatches), the stores by the 33:0x01a0 diff, the CW restore by `t_crt_sqrt_cw` in `test_seg33.c`. |
 
-Every other `fp=1` function in segment 34 is called only from inside segment 34
+Every other floating point function in segment 34 is called only from inside segment 34
 (the transcendental implementations and their helpers). The game segments contain
-no calls to them, so no `libm` replacement is needed beyond `ftol`.
+no calls to them, so no `libm` replacement is needed beyond `ftol` and `sqrt`.
 
 ### Build and test
 

@@ -161,7 +161,7 @@ static uint64_t rnd_near(uint64_t a) {
 
 #define BATCH 1000u
 
-static uint16_t g_code_arith[4], g_code_fistp16, g_code_fistp32, g_code_fistp64;
+static uint16_t g_code_arith[4], g_code_fistp16, g_code_fistp32, g_code_fistp64, g_code_fsqrt;
 static uint16_t g_data; /* data selector: BATCH records of 24 bytes (a, b, result) */
 
 static uint16_t mk(const uint8_t *c, size_t n) {
@@ -190,6 +190,10 @@ static void setup_code(void) {
   {
     uint8_t c[] = {0x26, 0xDD, 0x04, 0x26, 0xDF, 0x7C, 0x10, 0x83, 0xC6, 0x18, 0xE2, 0xF4, 0xCB};
     g_code_fistp64 = mk(c, sizeof c); /* fistp qword */
+  }
+  {
+    uint8_t c[] = {0x26, 0xDD, 0x04, 0xD9, 0xFA, 0x26, 0xDD, 0x5C, 0x10, 0x83, 0xC6, 0x18, 0xE2, 0xF2, 0xCB};
+    g_code_fsqrt = mk(c, sizeof c); /* fld qword; fsqrt; fstp qword */
   }
   g_data = GlobalAlloc(GPTR, BATCH * 24u);
   CHECK(g_data != 0);
@@ -239,6 +243,39 @@ static Stat test_arith(int op, uint16_t cw, unsigned n) {
     }
   }
   return s;
+}
+
+/* FSQRT (stars-bfj.35: the C runtime's sqrt, 34:0x0d68, ends in FSQRT; 33:0x01a0 needs it).
+ * Operands: random doubles (negative ones give the real indefinite), perfect squares, values
+ * just around squares and small integers like the game's squared distances. Returns the number of
+ * mismatches against the Unicorn x87 under cw. */
+static unsigned test_sqrt(uint16_t cw, unsigned n) {
+  unsigned bad = 0;
+  uint64_t rec[BATCH][3];
+  fp80_set_cw(cw);
+  for (unsigned done = 0; done < n; done += BATCH) {
+    for (unsigned i = 0; i < BATCH; i++) {
+      uint64_t r = rnd();
+      unsigned k = (unsigned)(r >> 60) & 7;
+      double v;
+      if (k == 0) v = (double)(rnd() % 4000000000ull);
+      else if (k == 1) { double q = (double)(rnd() % 65536); v = q * q; }
+      else if (k == 2) { double q = (double)(rnd() % 65536); v = q * q + (double)((int)(rnd() % 3) - 1); }
+      else if (k == 3) v = (double)(int32_t)(uint32_t)rnd();
+      else if (k == 4) v = (double)(rnd() % 1000);
+      else { rec[i][0] = rnd_bits(); rec[i][1] = 0; rec[i][2] = 0; continue; }
+      rec[i][0] = bits(v); rec[i][1] = 0; rec[i][2] = 0;
+    }
+    run_x87(g_code_fsqrt, cw, rec);
+    for (unsigned i = 0; i < BATCH; i++) {
+      uint64_t a = rec[i][0], x = rec[i][2];
+      uint64_t f = bits(fp80_to_f64(fp80_sqrt(fp80_from_f64(dbl(a)))));
+      if (x != f && bad++ == 0)
+        fprintf(stderr, "fsqrt mismatch cw %04x: %016llx x87 %016llx fp80 %016llx\n", cw,
+                (unsigned long long)a, (unsigned long long)x, (unsigned long long)f);
+    }
+  }
+  return bad;
 }
 
 /* Integer test operand: ties, values around the int16/int32 limits, random magnitudes. */
@@ -353,6 +390,10 @@ static void test_equivalence(void) {
   CHECK_EQ(test_fistp(0, PINNED_CW, N_PAIRS), 0);
   CHECK_EQ(test_fistp(1, PINNED_CW, N_PAIRS), 0);
   printf("FISTP m16/m32 cw=%04x: %d pairs each\n", PINNED_CW, N_PAIRS);
+  CHECK_EQ(test_sqrt(PINNED_CW, N_PAIRS), 0);
+  CHECK_EQ(test_sqrt(0x137F, N_PAIRS_CW), 0); /* 64-bit precision, the word the CRT sqrt runs under */
+  CHECK_EQ(test_sqrt(0x027F, N_PAIRS_CW), 0); /* 53-bit precision */
+  printf("FSQRT cw=%04x: %d operands\n", PINNED_CW, N_PAIRS);
   test_ftol_cases();
   CHECK_EQ(test_ftol(N_PAIRS), 0);
   printf("FISTP m64 (ftol) cw=0f7f: %d operands, low 32 bits\n", N_PAIRS);

@@ -243,6 +243,10 @@ static HApiFn find_handler(const Thunk *t) {
   return t->fn;
 }
 
+bool harness_import_has_handler(size_t idx) {
+  return idx < g_n_thunks && find_handler(&g_thunks[idx]) != NULL;
+}
+
 /* ---- log ---- */
 
 static HLogEntry *log_new(void);
@@ -254,6 +258,33 @@ void harness_log_clear(void) { g_n_log = 0; }
 void harness_log_set(const HLogEntry *e, size_t n) {
   g_n_log = 0;
   for (size_t i = 0; i < n; i++) *log_new() = e[i];
+}
+
+size_t harness_log_begin(const char *module, uint16_t ordinal, const uint16_t *words, int nwords) {
+  HLogEntry *e = log_new();
+  size_t idx = g_n_log - 1;
+  e->module = module;
+  e->ordinal = ordinal;
+  for (size_t i = 0; i < g_n_thunks; i++) {
+    if (g_thunks[i].ordinal == ordinal && strcmp(g_thunks[i].module, module) == 0) {
+      e->name = g_thunks[i].name;
+      break;
+    }
+  }
+  e->argbytes = (uint16_t)(nwords * 2);
+  for (int i = 0; i < nwords; i++) {
+    unsigned at = (unsigned)(nwords - 1 - i) * 2u; /* the last pushed word is at the lowest address */
+    if (at + 2 <= HARNESS_MAX_LOG_ARGS) {
+      e->args[at] = (uint8_t)words[i];
+      e->args[at + 1] = (uint8_t)(words[i] >> 8);
+    }
+  }
+  e->implemented = true;
+  return idx;
+}
+
+void harness_log_end(size_t idx, uint32_t ret) {
+  if (idx < g_n_log) g_log[idx].ret = ret;
 }
 
 static HLogEntry *log_new(void) {

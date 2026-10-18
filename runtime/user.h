@@ -602,6 +602,12 @@ void AdjustWindowRect(FARPTR lpRect, uint32_t dwStyle, uint16_t bMenu);
 uint16_t DestroyCursor(HCURSOR16 hCursor);
 int16_t ShowCursor(uint16_t bShow); /* display counter */
 HICON16 LoadIcon(HANDLE16 hInstance, FARPTR lpIconName);
+/* RT_BITMAP resource of the program as a screen-compatible bitmap (1-bpp: monochrome); 0 when
+ * hInstance is 0 (system bitmaps) or the resource is missing (runtime/user_bitmap.c). */
+HBITMAP16 LoadBitmap(HANDLE16 hInstance, FARPTR lpBitmapName);
+/* WinHelp: there is no help engine; the call is accepted and does nothing, returning TRUE
+ * (runtime/user_misc.c). */
+uint16_t WinHelp(HWND16 hwnd, FARPTR lpHelpFile, uint16_t uCommand, uint32_t dwData);
 uint16_t DrawIcon(HDC16 hdc, int16_t x, int16_t y, HICON16 hIcon);
 uint16_t DestroyIcon(HICON16 hIcon);
 /* Present: fb_present plus the software cursor (AND mask, then XOR mask, at the pointer

@@ -92,6 +92,16 @@ Fp80 fp80_sub(Fp80 a, Fp80 b) { BINOP(extF80_sub, a, b); }
 Fp80 fp80_mul(Fp80 a, Fp80 b) { BINOP(extF80_mul, a, b); }
 Fp80 fp80_div(Fp80 a, Fp80 b) { BINOP(extF80_div, a, b); }
 
+Fp80 fp80_sqrt(Fp80 a) {
+  uint_fast8_t saved = softfloat_exceptionFlags;
+  Fp80 r;
+  softfloat_exceptionFlags = 0;
+  r = extF80_sqrt(a);
+  raise(softfloat_exceptionFlags, de(a));
+  softfloat_exceptionFlags = saved;
+  return r;
+}
+
 int32_t fp80_to_i32(Fp80 x) {
   uint_fast8_t saved = softfloat_exceptionFlags;
   int_fast32_t v;

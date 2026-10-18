@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "runtime/commdlg.h"
 #include "runtime/frame.h"
 #include "runtime/user_internal.h"
 
@@ -101,6 +102,7 @@ void user_shutdown(void) {
   if (!st) return;
   user_ctl_shutdown();
   user_menu_shutdown();
+  commdlg_shutdown();
   for (unsigned i = 0; i < UW_MAX; i++)
     if (st->w[i].used && st->w[i].extra_off) rt_free(mem_arena() + st->w[i].extra_off);
   rt_free(st);
@@ -132,6 +134,7 @@ static uint32_t cb_proc(uint16_t off, HWND16 h, uint16_t msg, uint16_t wp, uint3
     case 0x0030: return user_static_proc(h, msg, wp, lp);     /* ctl_static.c */
     case 0x0040: return user_scrollbar_proc(h, msg, wp, lp);  /* ctl_scroll.c */
     case 0x0080: return user_dialog_proc(h, msg, wp, lp);     /* the dialog class: DefDlgProc (dialog.c, stars-0z4.12) */
+    case 0x00a0: return user_filedlg_proc(h, msg, wp, lp);    /* the File Open / Save As dialog function (commdlg.c, stars-0z4.14) */
     case 0x0090: return user_menu_popup_proc(h, msg, wp, lp); /* the pop-up menu class (menu_ui.c, stars-0z4.13) */
     case 0x0050: return user_edit_proc(h, msg, wp, lp);       /* standard controls part 2 (stars-0z4.11): ctl_edit.c */
     case 0x0060: return user_listbox_proc(h, msg, wp, lp);    /* ctl_listbox.c */

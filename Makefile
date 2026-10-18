@@ -14,16 +14,16 @@ endif
 UNICORN_PREFIX  := $(shell brew --prefix unicorn 2>/dev/null)
 CAPSTONE_PREFIX := $(shell brew --prefix capstone 2>/dev/null)
 
-CFLAGS    := -std=c11 -Wall -Wextra -Werror -g -O1 -fsanitize=address,undefined -DSOFTFLOAT_FAST_INT64
+CFLAGS    := -std=c11 -Wall -Wextra -Werror -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DSOFTFLOAT_FAST_INT64
 INCLUDES  := -I. -Itests -Ithird_party/softfloat/source/include -I$(UNICORN_PREFIX)/include -I$(CAPSTONE_PREFIX)/include
-LDFLAGS   := -fsanitize=address,undefined -L$(UNICORN_PREFIX)/lib -L$(CAPSTONE_PREFIX)/lib
+LDFLAGS   := -fsanitize=address,undefined -fno-sanitize-recover=undefined -L$(UNICORN_PREFIX)/lib -L$(CAPSTONE_PREFIX)/lib
 LDLIBS    := -lunicorn -lcapstone
 AR        ?= ar
 
 # Libraries: each directory's .c files form one static library. A directory
 # with no .c files is skipped, so later tasks only add files.
 RUNTIME_SRCS := $(wildcard runtime/*.c)
-HARNESS_SRCS := $(wildcard harness/*.c) build/registry.c
+HARNESS_SRCS := $(filter-out harness/run_original.c,$(wildcard harness/*.c)) build/registry.c
 GAME_SRCS    := $(wildcard src/*.c)
 
 LIBS :=
@@ -112,6 +112,12 @@ $(NEDUMP): tools/nedump.c runtime/ne.h build/libruntime.a
 	@mkdir -p build
 	$(CC) $(CFLAGS) $(INCLUDES) $< build/libruntime.a $(LDFLAGS) -o $@
 
+# run_original: the original stars26i.exe on the runtime under the harness (stars-9gm.3).
+RUN_ORIGINAL := build/run_original
+$(RUN_ORIGINAL): harness/run_original.c $(LIBS)
+	@mkdir -p build
+	$(CC) $(CFLAGS) $(INCLUDES) -MMD -MP -MF $@.d $< $(LIBS) $(LDFLAGS) $(LDLIBS) -o $@
+
 .PHONY: all test doctor clean check-split lint
 
 # The runtime must not depend on the harness (the split is one-way: harness -> runtime).
@@ -125,7 +131,7 @@ check-split:
 lint:
 	python3 tools/lint_src.py
 
-all: $(LIBS) $(TEST_BINS) $(GEN_IMPORTS) $(NEDUMP)
+all: $(LIBS) $(TEST_BINS) $(GEN_IMPORTS) $(NEDUMP) $(RUN_ORIGINAL)
 
 test: check-split $(TEST_BINS) $(GEN_IMPORTS)
 	@fail=0; \

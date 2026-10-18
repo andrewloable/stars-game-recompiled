@@ -341,3 +341,11 @@ int16_t FrameRect(HDC16 hdc, FARPTR lpRect, HBRUSH16 hbr) {
   SelectObject(hdc, old);
   return 1;
 }
+
+uint16_t WinHelp(HWND16 hwnd, FARPTR lpHelpFile, uint16_t uCommand, uint32_t dwData) {
+  (void)hwnd;
+  (void)lpHelpFile;
+  (void)uCommand;
+  (void)dwData;
+  return 1;
+}

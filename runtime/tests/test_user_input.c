@@ -815,6 +815,29 @@ static void test_mouse_hit_and_disabled(void) {
   drain();
   EnableWindow(w, 1);
 
+  /* stars-q2c: a child of a disabled window gets no mouse input either (EnableWindow: "all its
+   * child windows are also disabled"). The child is itself enabled; the point lies on it. It is
+   * the situation behind the scrambled serial-dialog text: the owner of a modal dialog is
+   * disabled and a click on a button inside the owner used to reach the button. */
+  { HWND16 kid = mk("K", CLS, "k", WS_CHILD | WS_VISIBLE, 10, 10, 50, 50, w, 7); /* screen (110,110)-(160,160) */
+    EnableWindow(w, 0);
+    log_clear();
+    mouse(130, 130, 0, 13040);
+    CHECK_EQ(get_in(&m), 0);
+    CHECK_EQ(log_find("K", WM_NCHITTEST, 0) == NULL, 1); /* the child is not asked */
+    CHECK_EQ(log_find("K", WM_SETCURSOR, 0) != NULL || log_find("W", WM_SETCURSOR, 0) != NULL, 1);
+    mouse(130, 130, 1, 13050);
+    CHECK_EQ(get_in(&m), 0); /* no WM_LBUTTONDOWN reaches the child */
+    mouse(130, 130, 0, 13060);
+    drain();
+    EnableWindow(w, 1);
+    mouse(130, 130, 1, 13070);
+    CHECK_EQ(get_in(&m), 1); /* enabled again: it does */
+    mouse(130, 130, 0, 13080);
+    drain();
+    DestroyWindow(kid);
+  }
+
   /* HTNOWHERE (0): eaten, WM_SETCURSOR sent, no beep */
   hit_hook_on = 1;
   g_hit = HTNOWHERE;

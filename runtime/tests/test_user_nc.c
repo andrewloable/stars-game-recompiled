@@ -447,6 +447,10 @@ static void test_syscommand(void) {
   /* Alt+F4 */
   log_clear();
   SendMessage(g_top, WM_SYSKEYDOWN, VK_F4_, 0x20000001UL);
+  { /* SC_CLOSE is POSTED to the top-level window (Wine defwnd.c 2766-2771): process the queue first */
+    FARPTR pm = far_alloc(sizeof(MSG16));
+    for (int guard = 0; guard < 50 && PeekMessage(pm, 0, 0, 0, PM_REMOVE); guard++) DispatchMessage(pm);
+  }
   CHECK(log_find("T", WM_SYSCOMMAND, 0) != NULL || log_find("T", WM_CLOSE, 0) != NULL);
   g_hook = NULL;
   DestroyWindow(g_top);

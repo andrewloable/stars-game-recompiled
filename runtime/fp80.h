@@ -54,6 +54,11 @@ Fp80 fp80_sub(Fp80 a, Fp80 b);
 Fp80 fp80_mul(Fp80 a, Fp80 b);
 Fp80 fp80_div(Fp80 a, Fp80 b);
 
+/* FSQRT: the correctly rounded square root, rounded by the precision control (PC) and rounding
+ * control (RC) of the control word. A negative operand (not -0) raises IE and gives the real
+ * indefinite. Proven against the Unicorn x87 by harness/tests/test_fp.c (test_sqrt). */
+Fp80 fp80_sqrt(Fp80 a);
+
 /* FISTP m16 / m32: round by RC; out of range or NaN gives the integer indefinite
  * (0x8000 / 0x80000000). */
 int16_t fp80_to_i16(Fp80 x);

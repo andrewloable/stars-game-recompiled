@@ -77,6 +77,17 @@ static bool can_activate(HWND16 h) {
   return w && h != user_desktop() && (w->style & (WS_VISIBLE | WS_DISABLED)) == WS_VISIBLE;
 }
 
+/* A window gets no mouse input when it or any of its ancestors is disabled (EnableWindow: disabling
+ * a window disables its child windows too). stars-q2c. */
+static bool input_disabled(const UWnd *w) {
+  for (int guard = 0; w && guard < UW_MAX + 2; guard++) {
+    if (w->style & WS_DISABLED) return true;
+    if (!(w->style & WS_CHILD)) break;
+    w = user_wnd(w->parent);
+  }
+  return false;
+}
+
 static uint32_t snd(HWND16 h, uint16_t msg, uint16_t wp, uint32_t lp) {
   const UWnd *w = user_wnd(h);
   if (!w) return 0;
@@ -491,7 +502,7 @@ static int process_mouse(const UMsg *e, HWND16 filter, uint16_t min, uint16_t ma
         return H_DROP;
       }
       w = user_wnd(target);
-      if (w->style & WS_DISABLED) {
+      if (input_disabled(w)) {
         hit = HTERROR;
         break;
       }

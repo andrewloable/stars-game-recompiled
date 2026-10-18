@@ -176,15 +176,23 @@ static void write_coverage(Fn *f) {
   n = sweep(seg_sel(f->seg), f->off, f->size, &offs);
   for (size_t i = 0; i < n; i++)
     if (f->hit[offs[i] >> 3] & (1u << (offs[i] & 7))) hits++;
-  free(offs);
   mkdir("build", 0777);
   mkdir("build/coverage", 0777);
   snprintf(path, sizeof path, "build/coverage/%u_%04x.txt", f->seg, f->off);
   fp = fopen(path, "w");
-  if (!fp) return;
+  if (!fp) {
+    free(offs);
+    return;
+  }
   fprintf(fp, "function %s seg=%u off=0x%04x size=%u\n", f->name, f->seg, f->off, f->size);
   fprintf(fp, "instructions=%zu executed=%zu\n", n, hits);
   fprintf(fp, "coverage=%.1f%%\n", n ? 100.0 * (double)hits / (double)n : 0.0);
+  /* Offsets of the instructions never executed (an aid for adding scenarios). */
+  fprintf(fp, "uncovered:");
+  for (size_t i = 0; i < n; i++)
+    if (!(f->hit[offs[i] >> 3] & (1u << (offs[i] & 7)))) fprintf(fp, " %04x", offs[i]);
+  fprintf(fp, "\n");
+  free(offs);
   fclose(fp);
 }
 

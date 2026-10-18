@@ -97,16 +97,37 @@ HFILE16 OpenFile(FARPTR name, FARPTR reopen, uint16_t style) {
 
 HFILE16 _lclose(HFILE16 hf) { return vfs_close((uint16_t)hf) ? HFILE_ERROR : 0; }
 
+/* A buffer may run past the 64 KB limit of a selector of a huge global block (the game reads
+ * resource bitmaps of over 100 KB in 30000-byte chunks at offsets such as 0xEA60, or at 0xD4C0
+ * of the block's second selector): DOS reads into protected-mode memory by linear address, so it
+ * succeeds as long as the whole range lies inside the block. The selectors of a block are
+ * linearly contiguous (step MEM_AHINCR), which is checked chunk by chunk. */
+static bool buf_ok(FARPTR buf, uint16_t n) {
+  uint16_t sel = FP_SEG(buf);
+  uint32_t off = FP_OFF(buf), left = n;
+  for (;;) {
+    uint32_t room = 0x10000u - off;
+    if (left <= room) return mem_check(MK_FP(sel, off), left);
+    if (!mem_check(MK_FP(sel, off), room)) return false;
+    if (!mem_check(MK_FP((uint16_t)(sel + MEM_AHINCR), 0), 1)) return false;
+    if ((uint8_t *)LIN(MK_FP((uint16_t)(sel + MEM_AHINCR), 0)) != (uint8_t *)LIN(MK_FP(sel, 0)) + 0x10000u)
+      return false;
+    left -= room;
+    sel = (uint16_t)(sel + MEM_AHINCR);
+    off = 0;
+  }
+}
+
 uint16_t _lread(HFILE16 hf, FARPTR buf, uint16_t n) {
   uint32_t got;
-  if (n && !mem_check(buf, n)) return 0xFFFF;
+  if (n && !buf_ok(buf, n)) return 0xFFFF;
   if (vfs_read((uint16_t)hf, n ? LIN(buf) : NULL, n, &got)) return 0xFFFF;
   return (uint16_t)got;
 }
 
 uint16_t _lwrite(HFILE16 hf, FARPTR buf, uint16_t n) {
   uint32_t put;
-  if (n && !mem_check(buf, n)) return 0xFFFF;
+  if (n && !buf_ok(buf, n)) return 0xFFFF;
   if (vfs_write((uint16_t)hf, n ? LIN(buf) : NULL, n, &put)) return 0xFFFF;
   return (uint16_t)put;
 }

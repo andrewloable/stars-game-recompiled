@@ -92,6 +92,8 @@ uint32_t harness_add_import(const char *module, uint16_t ordinal, const char *na
 /* Thunk table, ordered as laid out in the thunk segment (index = offset / 8). */
 size_t harness_import_count(void);
 bool harness_import_info(size_t idx, const char **module, uint16_t *ordinal, const char **name);
+/* True when import idx has a handler registered (strict mode would not abort on it). */
+bool harness_import_has_handler(size_t idx);
 /* Far pointer of the thunk for (module, ordinal), 0 when not imported. */
 uint32_t harness_thunk_far(const char *module, uint16_t ordinal);
 
@@ -121,6 +123,13 @@ const HLogEntry *harness_log_get(size_t i);
 void harness_log_clear(void);
 /* Replaces the log with a copy of e[0..n) (restores a log saved earlier). */
 void harness_log_set(const HLogEntry *e, size_t n);
+/* By-name call logging (harness/byname.h): records the call as the import thunk would. words are
+ * the argument words in PUSH order (the first one pushed first); the entry's argument bytes are the
+ * stack image, so the last pushed word comes first. harness_log_begin appends the entry before the
+ * runtime function runs (so any nested logged call comes after it) and returns its index;
+ * harness_log_end stores the return value. */
+size_t harness_log_begin(const char *module, uint16_t ordinal, const uint16_t *words, int nwords);
+void harness_log_end(size_t idx, uint32_t ret);
 
 /* x87 control word of the emulated FPU (UC_X86_REG_FPCW), for the FP semantics
  * tests (docs/CONVENTIONS.md "Floating point"). harness_stop_emu stops the
